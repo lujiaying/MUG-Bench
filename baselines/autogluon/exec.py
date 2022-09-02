@@ -1,18 +1,25 @@
 import os
+import json
 import argparse
 
 from autogluon.tabular import TabularPredictor, TabularDataset
 
 
 def main(args: argparse.Namespace):
+    if not os.path.exists(args.exp_save_dir):
+        os.makedirs(args.exp_save_dir)
+    # store exp arguments for reproducibility
+    exp_arg_save_path = os.path.join(args.exp_save_dir, 'exp_arguments.json')
+    with open(exp_arg_save_path, 'w') as fwrite:
+        json.dump(args.__dict__, fwrite, indent=2)
+    print(f'[INFO] experiment arguments store into {exp_arg_save_path}')
+
     # load train, dev, test
     train_data = TabularDataset(os.path.join(args.dataset_dir, 'train.csv'))
     dev_data = TabularDataset(os.path.join(args.dataset_dir, 'dev.csv'))
     test_data = TabularDataset(os.path.join(args.dataset_dir, 'test.csv'))
     # TODO: add support for GPU model (potentially one argument from parser)
     # prepare predictor
-    if not os.path.exists(args.exp_save_dir):
-        os.makedirs(args.exp_save_dir)
     model_save_dir = os.path.join(args.exp_save_dir, 'ag_ckpt')
     predictor = TabularPredictor(label=args.col_label, path=model_save_dir)
     
@@ -24,9 +31,10 @@ def main(args: argparse.Namespace):
     # do test
     predictor.persist_models('all')   # load model from disk into memory
     predictor.leaderboard(test_data)
+    test_metric_res = predictor.evaluate(test_data)
 
     # TODO: cal multiple eval metrics on test_data
-    # TODO: save eval metrics into csv under args.exp_save_dir (recommend using pandas)
+    # TODO: save eval metrics into csv under args.exp_save_dir (recommend using pandas DataFrame. Then df.to_csv())
 
 
 if __name__ == '__main__':
@@ -45,6 +53,5 @@ if __name__ == '__main__':
             help="TabularPredictor.fit(). Available Presets: [‘best_quality’, ‘high_quality’, ‘good_quality’, ‘medium_quality’, ‘optimize_for_deployment’, ‘interpretable’, ‘ignore_text’]")
 
     args = parser.parse_args()
-    print(f'Exp arguments: {args}')
-
+    print(f'[INFO] Exp arguments: {args}')
     main(args)
