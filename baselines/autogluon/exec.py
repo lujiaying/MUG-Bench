@@ -10,9 +10,14 @@ def main(args: argparse.Namespace):
         os.makedirs(args.exp_save_dir)
     # store exp arguments for reproducibility
     exp_arg_save_path = os.path.join(args.exp_save_dir, 'exp_arguments.json')
-    with open(exp_arg_save_path, 'w') as fwrite:
-        json.dump(args.__dict__, fwrite, indent=2)
-    print(f'[INFO] experiment arguments store into {exp_arg_save_path}')
+    if args.do_load_ckpt:
+        with open(exp_arg_save_path) as fopen:
+            exp_args_disk = json.load(fopen)
+        print(f'[INFO] experiment arguments= {exp_args_disk}, load from {exp_arg_save_path}')
+    else:
+        with open(exp_arg_save_path, 'w') as fwrite:
+            json.dump(args.__dict__, fwrite, indent=2)
+        print(f'[INFO] experiment arguments store into {exp_arg_save_path}')
 
     # load train, dev, test
     train_data = TabularDataset(os.path.join(args.dataset_dir, 'train.csv'))
@@ -21,7 +26,10 @@ def main(args: argparse.Namespace):
     # TODO: add support for GPU model (potentially one argument from parser)
     # prepare predictor
     model_save_dir = os.path.join(args.exp_save_dir, 'ag_ckpt')
-    predictor = TabularPredictor(label=args.col_label, path=model_save_dir)
+    if args.do_load_ckpt:
+        predictor = TabularPredictor.load(model_save_dir)
+    else:
+        predictor = TabularPredictor(label=args.col_label, path=model_save_dir)
     
     # do train
     predictor.fit(train_data=train_data, tuning_data=dev_data, 
@@ -32,9 +40,9 @@ def main(args: argparse.Namespace):
     predictor.persist_models('all')   # load model from disk into memory
     predictor.leaderboard(test_data)
     test_metric_res = predictor.evaluate(test_data)
-
-    # TODO: cal multiple eval metrics on test_data
     # TODO: save eval metrics into csv under args.exp_save_dir (recommend using pandas DataFrame. Then df.to_csv())
+    ## show feature importance
+    print(predictor.feature_importance(test_data))
 
 
 if __name__ == '__main__':
@@ -44,6 +52,7 @@ if __name__ == '__main__':
     parser.add_argument('--exp_save_dir', type=str, required=True)
     parser.add_argument('--col_label', type=str, required=True)
     # optional arguments
+    parser.add_argument('--do_load_ckpt', action='store_true')
     # Please refer to https://auto.gluon.ai/stable/api/autogluon.predictor.html#autogluon.tabular.TabularPredictor.fit
     parser.add_argument('--fit_hyperparameters', default='default', 
             help="TabularPredictor.fit(). Choices include 'default', 'multimodal'")
