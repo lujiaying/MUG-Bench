@@ -1,23 +1,9 @@
-# Sep 2
-# DEBUG
-# dataset_name="AnimalCrossing_Gender"
-# python baselines/autogluon/exec.py \
-#     --dataset_dir datasets/${dataset_name} \
-#     --exp_save_dir exps/${dataset_name}_DEBUG \
-#     --col_label Gender \
-#     --fit_presets medium_quality
-
-# dataset_name="AnimalCrossing_Species"
-# python baselines/autogluon/exec.py \
-#     --dataset_dir datasets/${dataset_name} \
-#     --exp_save_dir exps/${dataset_name}_DEBUG \
-#     --col_label Species \
-#     --fit_presets medium_quality
-
-# Sep 9
+# Sep 24
 dataset_name="AnimalCrossing_Species"
-python baselines/autogluon/exec.py \
+python -m baselines.autogluon.exec \
     --dataset_dir datasets/${dataset_name} \
     --exp_save_dir exps/${dataset_name}_multimodal_medium \
+    --task_name ${dataset_name} \
     --col_label Species \
+    --fit_hyperparameters multimodal \
     --fit_presets medium_quality
