@@ -9,6 +9,7 @@ import pandas as pd
 from autogluon.tabular import TabularPredictor, TabularDataset, __version__, FeatureMetadata
 from autogluon.tabular.configs.hyperparameter_configs import get_hyperparameter_config
 
+from .multilabel_predictor import MultilabelPredictor
 from ..utils import get_exp_constraint
 
 
@@ -43,49 +44,97 @@ def main(args: argparse.Namespace):
         feature_metadata = feature_metadata.add_special_types({image_col: ['image_path']})
     # prepare predictor
     model_save_dir = os.path.join(args.exp_save_dir, 'ag_ckpt')
-    if args.do_load_ckpt:
-        predictor = TabularPredictor.load(model_save_dir)
-    else:
-        predictor = TabularPredictor(label=args.col_label, path=model_save_dir)
-        # do train
+    if len(args.col_labels) == 1:
+        # use TabularPredictor
+        if args.do_load_ckpt:
+            predictor = TabularPredictor.load(model_save_dir)
+        else:
+            predictor = TabularPredictor(label=args.col_labels[0], path=model_save_dir)
+            # do train
+            ts = time.time()
+            hyperparameters = get_hyperparameter_config(args.fit_hyperparameters)
+            predictor.fit(train_data=train_data, tuning_data=dev_data, 
+                    hyperparameters=hyperparameters, presets=args.fit_presets,
+                    time_limit=args.fit_time_limit,
+                    feature_metadata=feature_metadata,
+                    )
+            te = time.time()
+            training_duration = te - ts
+        predictor.leaderboard()
+        # do test
+        predictor.persist_models('best')   # load model from disk into memory
         ts = time.time()
-        hyperparameters = get_hyperparameter_config(args.fit_hyperparameters)
-        predictor.fit(train_data=train_data, tuning_data=dev_data, 
-                hyperparameters=hyperparameters, presets=args.fit_presets,
-                time_limit=args.fit_time_limit,
-                feature_metadata=feature_metadata,
-                )
+        test_metric_res = predictor.evaluate(test_data)
         te = time.time()
-        training_duration = te - ts
-    predictor.leaderboard()
-
-    # do test
-    predictor.persist_models('best')   # load model from disk into memory
-    ts = time.time()
-    test_metric_res = predictor.evaluate(test_data)
-    te = time.time()
-    predict_duration = te - ts
-    ## show feature importance
-    print(predictor.feature_importance(test_data))
-    te_duration = time.time()
-    if not args.do_load_ckpt:
-        result = dict(
-                task=args.task_name,
-                framework='AutoGluon',
-                constraint=get_exp_constraint(args.fit_time_limit),
-                type=predictor.problem_type,
-                params=json.dumps(args.__dict__),
-                framework_version=__version__,
-                utc=datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S'),
-                duration=round(te_duration-ts_duration, 1),
-                training_duration=round(training_duration, 1),
-                predict_duration=round(predict_duration, 1),
-                seed=args.seed,
-                )
-        result.update(test_metric_res)
-        exp_result_save_path = os.path.join(args.exp_save_dir, 'results.csv')
-        result_df = pd.DataFrame.from_records([result])
-        result_df.to_csv(exp_result_save_path, index=False)
+        predict_duration = te - ts
+        ## show feature importance
+        print(predictor.feature_importance(test_data))
+        te_duration = time.time()
+        if not args.do_load_ckpt:
+            result = dict(
+                    task=args.task_name,
+                    framework='AutoGluon',
+                    constraint=get_exp_constraint(args.fit_time_limit),
+                    type=predictor.problem_type,
+                    params=args.__dict__,
+                    framework_version=__version__,
+                    utc=datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S'),
+                    duration=round(te_duration-ts_duration, 1),
+                    training_duration=round(training_duration, 1),
+                    predict_duration=round(predict_duration, 1),
+                    seed=args.seed,
+                    )
+            result.update(test_metric_res)
+            exp_result_save_path = os.path.join(args.exp_save_dir, 'results.csv')
+            result_df = pd.DataFrame.from_records([result])
+            result_df.to_csv(exp_result_save_path, index=False)
+    else:
+        # use MultilabelPredictor
+        if args.do_load_ckpt:
+            multi_predictor = MultilabelPredictor.load(model_save_dir)
+        else:
+            multi_predictor = MultilabelPredictor(labels=args.col_labels, path=model_save_dir)
+            # do train
+            ts = time.time()
+            hyperparameters = get_hyperparameter_config(args.fit_hyperparameters)
+            multi_predictor.fit(train_data=train_data, tuning_data=dev_data, 
+                    hyperparameters=hyperparameters, presets=args.fit_presets,
+                    time_limit=args.fit_time_limit,
+                    feature_metadata=feature_metadata,
+                    )
+            te = time.time()
+            training_duration = te - ts
+        problem_types = []
+        for label in args.col_labels:
+            predictor = multi_predictor.get_predictor(label)
+            problem_types.append(predictor.problem_type)
+            predictor.leaderboard()
+            predictor.persist_models('best')   # load model from disk into memory
+            print(predictor.feature_importance(test_data))
+        # do test
+        ts = time.time()
+        test_metric_res = multi_predictor.evaluate(test_data)
+        te = time.time()
+        predict_duration = te - ts
+        te_duration = time.time()
+        if not args.do_load_ckpt:
+            result = dict(
+                    task=args.task_name,
+                    framework='AutoGluon',
+                    constraint=get_exp_constraint(args.fit_time_limit),
+                    type=problem_types,
+                    params=args.__dict__,
+                    framework_version=__version__,
+                    utc=datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S'),
+                    duration=round(te_duration-ts_duration, 1),
+                    training_duration=round(training_duration, 1),
+                    predict_duration=round(predict_duration, 1),
+                    seed=args.seed,
+                    metrics=test_metric_res,   # a dict contains multi cols test metrics
+                    )
+            exp_result_save_path = os.path.join(args.exp_save_dir, 'results.csv')
+            result_df = pd.DataFrame.from_records([result])
+            result_df.to_csv(exp_result_save_path, index=False)
 
 
 if __name__ == '__main__':
@@ -93,7 +142,7 @@ if __name__ == '__main__':
     # required arguments
     parser.add_argument('--dataset_dir', type=str, required=True)
     parser.add_argument('--exp_save_dir', type=str, required=True)
-    parser.add_argument('--col_label', type=str, required=True)
+    parser.add_argument('--col_labels', nargs='+', type=str, required=True)
     parser.add_argument('--task_name', type=str, required=True)
     # optional arguments
     parser.add_argument('--do_load_ckpt', action='store_true')
