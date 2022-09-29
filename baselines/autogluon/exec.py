@@ -1,9 +1,9 @@
 import os
-import json
 import argparse
 import time
 import random
 from datetime import datetime 
+from typing import List
 
 import pandas as pd
 from autogluon.tabular import TabularPredictor, TabularDataset, __version__, FeatureMetadata
@@ -11,6 +11,15 @@ from autogluon.tabular.configs.hyperparameter_configs import get_hyperparameter_
 
 from .multilabel_predictor import MultilabelPredictor
 from ..utils import get_exp_constraint
+
+
+def get_metric_names(problem_type: str) -> List[str]:
+    if problem_type == 'binary':
+        return ['accuracy', 'roc_auc', 'f1', 'log_loss']
+    elif problem_type == 'multiclass':
+        return ['accuracy', 'balanced_accuracy', 'mcc', 'log_loss']
+    else:
+        raise ValueError(f'problem_type={problem_type} get_metric_names() NOT implemented yet')
 
 
 def main(args: argparse.Namespace):
@@ -28,8 +37,8 @@ def main(args: argparse.Namespace):
             json.dump(args.__dict__, fwrite, indent=2)
         print(f'[INFO] experiment arguments store into {exp_arg_save_path}')
     """
-    random.seed(args.seed)
     ts_duration = time.time()
+    random.seed(args.seed)
     # load train, dev, test
     train_data = TabularDataset(os.path.join(args.dataset_dir, 'train.csv'))
     dev_data = TabularDataset(os.path.join(args.dataset_dir, 'dev.csv'))
@@ -45,11 +54,12 @@ def main(args: argparse.Namespace):
     # prepare predictor
     model_save_dir = os.path.join(args.exp_save_dir, 'ag_ckpt')
     if len(args.col_labels) == 1:
+        label = args.col_labels[0]
         # use TabularPredictor
         if args.do_load_ckpt:
             predictor = TabularPredictor.load(model_save_dir)
         else:
-            predictor = TabularPredictor(label=args.col_labels[0], path=model_save_dir)
+            predictor = TabularPredictor(label=label, path=model_save_dir, eval_metric=args.eval_metric)
             # do train
             ts = time.time()
             hyperparameters = get_hyperparameter_config(args.fit_hyperparameters)
@@ -62,13 +72,20 @@ def main(args: argparse.Namespace):
             training_duration = te - ts
         predictor.leaderboard()
         # do test
-        predictor.persist_models('best')   # load model from disk into memory
+        predictor.persist_models('all')   # load model from disk into memory
+        metric_names = get_metric_names(predictor.problem_type)
         ts = time.time()
-        test_metric_res = predictor.evaluate(test_data)
+        # WARNING: leaderboard() actuall do predict with every trained models (which can be slower)
+        # we have to use leaderboard() because we want to have extra_metrics
+        leaderboard = predictor.leaderboard(test_data, extra_metrics=metric_names)
         te = time.time()
         predict_duration = te - ts
+        best_model_row = leaderboard.set_index('model').loc[predictor.get_model_best()]
+        test_metric_res = {m: best_model_row.loc[m] for m in metric_names}
+        test_metric_res['log_loss'] = - test_metric_res['log_loss']   # ag use flipped log_loss, we should align with sklearn
+        print(test_metric_res)
         ## show feature importance
-        print(predictor.feature_importance(test_data))
+        # print(predictor.feature_importance(test_data))
         te_duration = time.time()
         if not args.do_load_ckpt:
             result = dict(
@@ -90,6 +107,7 @@ def main(args: argparse.Namespace):
             result_df.to_csv(exp_result_save_path, index=False)
     else:
         # use MultilabelPredictor
+        # Notes: !! we NOT use multilabel predictor for majority cases!!
         if args.do_load_ckpt:
             multi_predictor = MultilabelPredictor.load(model_save_dir)
         else:
@@ -110,11 +128,12 @@ def main(args: argparse.Namespace):
             problem_types.append(predictor.problem_type)
             predictor.leaderboard()
             predictor.persist_models('best')   # load model from disk into memory
-            print(predictor.feature_importance(test_data))
+            # print(predictor.feature_importance(test_data))
         # do test
         ts = time.time()
         test_metric_res = multi_predictor.evaluate(test_data)
         te = time.time()
+        print(f'[INFO] test_metric_res={test_metric_res}')
         predict_duration = te - ts
         te_duration = time.time()
         if not args.do_load_ckpt:
@@ -144,6 +163,7 @@ if __name__ == '__main__':
     parser.add_argument('--exp_save_dir', type=str, required=True)
     parser.add_argument('--col_labels', nargs='+', type=str, required=True)
     parser.add_argument('--task_name', type=str, required=True)
+    parser.add_argument('--eval_metric', type=str, required=True)
     # optional arguments
     parser.add_argument('--do_load_ckpt', action='store_true')
     # Please refer to https://auto.gluon.ai/stable/api/autogluon.predictor.html#autogluon.tabular.TabularPredictor.fit

@@ -11,13 +11,13 @@ def main(args: argparse.Namespace):
     # criterion 0: no overlaps
     dev_overlap = dev_df[dev_df[args.id_col].isin(train_df[args.id_col])]
     if len(dev_overlap) > 0:
-        print('Following rows from dev EXIST in train!!')
+        print('[ERROR] Following rows from dev EXIST in train!!')
         print('*** Please remove the overlaps ***')
         print(dev_overlap)
         exit(-1)
     test_overlap = test_df[test_df[args.id_col].isin(train_df[args.id_col])]
     if len(test_overlap) > 0:
-        print('Following rows from test EXIST in train')
+        print('[ERROR] Following rows from test EXIST in train')
         print('*** Please remove the overlaps ***')
         print(test_overlap)
         exit(-1)
@@ -41,7 +41,7 @@ def main(args: argparse.Namespace):
         test_labels = set(test_df[label].unique())
         total_labels = train_labels.union(dev_labels).union(test_labels)
         if train_labels != total_labels:
-            print(f'For label={label}, train set missing label={total_labels-train_labels} from total_labels')
+            print(f'[ERROR] For label={label}, train set missing label={total_labels-train_labels} from total_labels')
             print('[DEBUG] train_label')
             print(train_df[label].value_counts())
             print(pd.concat([train_df, dev_df, test_df])[label].value_counts())
@@ -49,13 +49,23 @@ def main(args: argparse.Namespace):
             print(pd.concat([train_df, dev_df, test_df])[label].value_counts())
             exit(-1)
         if test_labels != total_labels:
-            print(f'For label={label}, test set missing label={total_labels-test_labels} from total_labels')
+            print(f'[ERROR] For label={label}, test set missing label={total_labels-test_labels} from total_labels')
             print('[DEBUG] test_label')
             print(test_df[label].value_counts())
             print('[DEBUG] all_label')
             print(pd.concat([train_df, dev_df, test_df])[label].value_counts())
             exit(-1)
         print(f'[PASS C3] For label={label}, train and test set ALL contains every label value')
+    # criterion 3: image path valid
+    image_col = 'Image Path'
+    for set_name, df in [('train', train_df), ('dev', dev_df), ('test', test_df)]:
+        if image_col not in df:
+            print(f'[ERROR] {image_col} NOT exist in {set_name}')
+            exit(-1)
+        for image_rel_path in df[image_col].tolist():
+            if not os.path.exists(os.path.join(args.dataset_dir, image_rel_path)):
+                print(f'[ERROR] {set_name} Image Path={image_rel_path} could not be located. ')
+                exit(-1)
     # TODO: write info into info_auto.txt
 
 
