@@ -69,6 +69,10 @@ def main(args: argparse.Namespace):
         # do train
         ts = time.time()
         hyperparameters = get_hyperparameter_config(args.fit_hyperparameters)
+        if args.fit_presets in ['high_quality', 'best_quality']:
+            # high or best NOT support tuning_data
+            train_data = pd.concat([train_data, dev_data])
+            dev_data = None
         predictor.fit(train_data=train_data, tuning_data=dev_data, 
                 hyperparameters=hyperparameters, presets=args.fit_presets,
                 time_limit=args.fit_time_limit,
