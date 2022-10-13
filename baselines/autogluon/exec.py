@@ -77,6 +77,7 @@ def main(args: argparse.Namespace):
                 hyperparameters=hyperparameters, presets=args.fit_presets,
                 time_limit=args.fit_time_limit,
                 feature_metadata=feature_metadata,
+                ag_args_ensemble=dict(fold_fitting_strategy='sequential_local'),
                 )
         te = time.time()
         training_duration = te - ts
