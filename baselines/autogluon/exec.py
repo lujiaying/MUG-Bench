@@ -28,18 +28,6 @@ def get_metric_names(problem_type: str) -> List[str]:
 def main(args: argparse.Namespace):
     if not os.path.exists(args.exp_save_dir):
         os.makedirs(args.exp_save_dir)
-    """
-    # store exp arguments for reproducibility
-    exp_arg_save_path = os.path.join(args.exp_save_dir, 'exp_arguments.json')
-    if args.do_load_ckpt:
-        with open(exp_arg_save_path) as fopen:
-            exp_args_disk = json.load(fopen)
-        print(f'[INFO] experiment arguments= {exp_args_disk}, load from {exp_arg_save_path}')
-    else:
-        with open(exp_arg_save_path, 'w') as fwrite:
-            json.dump(args.__dict__, fwrite, indent=2)
-        print(f'[INFO] experiment arguments store into {exp_arg_save_path}')
-    """
     ts_duration = time.time()
     random.seed(args.seed)
     # load task configure
@@ -94,7 +82,7 @@ def main(args: argparse.Namespace):
     best_model_row = leaderboard.set_index('model').loc[predictor.get_model_best()]
     test_metric_res = {m: best_model_row.loc[m] for m in metric_names}
     test_metric_res['log_loss'] = - test_metric_res['log_loss']   # ag use flipped log_loss, we should align with sklearn
-    print(test_metric_res)
+    print(f'Test metrics={test_metric_res}')
     ## show feature importance
     # print(predictor.feature_importance(test_data))
     te_duration = time.time()
