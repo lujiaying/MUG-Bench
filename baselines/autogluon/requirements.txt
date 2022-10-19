@@ -1,0 +1,13 @@
+torch==1.12.0+cu113
+torchvision==0.13.0+cu113
+torchtext==0.13.0
+autogluon==0.5.2
+py3nvml==0.2.7
+autogluon-contrib-nlp==0.0.1b20220208
+autogluon.common==0.5.2
+autogluon.core==0.5.2
+autogluon.features==0.5.2
+autogluon.multimodal==0.5.2
+autogluon.tabular==0.5.2
+autogluon.text==0.5.2
+autogluon.vision==0.5.2
