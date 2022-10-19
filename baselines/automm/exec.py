@@ -55,6 +55,7 @@ def main(args: argparse.Namespace):
     test_metric_res = predictor.evaluate(test_data, metrics=metric_names)
     te = time.time()
     predict_duration = te - ts
+    test_metric_res['log_loss'] = - test_metric_res['log_loss']   # ag use flipped log_loss, we should align with sklearn; log_loss the less the better
     print(f'Test metrics={test_metric_res}')
     te_duration = time.time()
     if not args.do_load_ckpt:
