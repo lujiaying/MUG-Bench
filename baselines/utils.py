@@ -16,6 +16,22 @@ def get_exp_constraint(time_limit_in_second: int) -> str:
     return constraint
 
 
+def prepare_ag_dataset(dataset_dir: str, include_image_col: bool = True) -> tuple:
+    from autogluon.tabular import TabularDataset, FeatureMetadata
+    train_data = TabularDataset(os.path.join(dataset_dir, 'train.csv'))
+    dev_data = TabularDataset(os.path.join(dataset_dir, 'dev.csv'))
+    test_data = TabularDataset(os.path.join(dataset_dir, 'test.csv'))
+    feature_metadata = FeatureMetadata.from_df(train_data)
+    if include_image_col:
+        image_col = 'Image Path'
+        image_id_to_path_func = lambda image_id: os.path.join(dataset_dir, image_id)
+        train_data[image_col] = train_data[image_col].apply(image_id_to_path_func)
+        dev_data[image_col] = dev_data[image_col].apply(image_id_to_path_func)
+        test_data[image_col] = test_data[image_col].apply(image_id_to_path_func)
+        feature_metadata = feature_metadata.add_special_types({image_col: ['image_path']})
+    return train_data, dev_data, test_data, feature_metadata
+
+
 if __name__ == '__main__':
     time_limit = 3600
     constraint = get_exp_constraint(time_limit)

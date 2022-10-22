@@ -4,13 +4,12 @@ import argparse
 import time
 import random
 from datetime import datetime 
-from typing import List
 
 import pandas as pd
 from autogluon.tabular import TabularDataset, FeatureMetadata
 from autogluon.multimodal import MultiModalPredictor, __version__
 
-from ..utils import get_exp_constraint
+from ..utils import get_exp_constraint, prepare_ag_dataset
 from ..autogluon.exec import get_metric_names
 
 
@@ -25,16 +24,7 @@ def main(args: argparse.Namespace):
     col_label = info_dict['label']
     eval_metric = info_dict['eval_metric']
     # load train, dev, test
-    train_data = TabularDataset(os.path.join(args.dataset_dir, 'train.csv'))
-    dev_data = TabularDataset(os.path.join(args.dataset_dir, 'dev.csv'))
-    test_data = TabularDataset(os.path.join(args.dataset_dir, 'test.csv'))
-    feature_metadata = FeatureMetadata.from_df(train_data)
-    image_col = 'Image Path'
-    image_id_to_path_func = lambda image_id: os.path.join(args.dataset_dir, image_id)
-    train_data[image_col] = train_data[image_col].apply(image_id_to_path_func)
-    dev_data[image_col] = dev_data[image_col].apply(image_id_to_path_func)
-    test_data[image_col] = test_data[image_col].apply(image_id_to_path_func)
-    feature_metadata = feature_metadata.add_special_types({image_col: ['image_path']})
+    train_data, dev_data, test_data, feature_metadata = prepare_ag_dataset(args.dataset_dir)
     # prepare predictor
     model_save_dir = os.path.join(args.exp_save_dir, 'ag_ckpt')
     if args.do_load_ckpt:
@@ -52,7 +42,7 @@ def main(args: argparse.Namespace):
     # do test
     metric_names = get_metric_names(predictor.problem_type)
     ts = time.time()
-    test_metric_res = predictor.evaluate(test_data, metrics=metric_names)
+    test_metric_res = predictor.evaluate(test_data.drop(columns=col_label), metrics=metric_names)
     te = time.time()
     predict_duration = te - ts
     test_metric_res['log_loss'] = - test_metric_res['log_loss']   # ag use flipped log_loss, we should align with sklearn; log_loss the less the better
