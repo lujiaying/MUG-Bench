@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List, Optional, Final, Dict
 
 import torch as th
 from torch import nn
@@ -10,53 +10,31 @@ from autogluon.multimodal.constants import CATEGORICAL_MLP, NUMERICAL_MLP, FUSIO
 from autogluon.tabular.models.tabular_nn.utils.nn_architecture_utils import get_embed_sizes
 
 
-Default_CatMLP_Config = dict(
-    out_features=128,
-    activation="leaky_relu",
-    num_layers=1,
-    dropout_prob=0.1,
-    normalization="layer_norm",
-)
+ALL_ACT_LAYERS: Final[Dict] = {
+    "leaky_relu": nn.LeakyReLU,
+    "gelu": nn.GELU,
+    "relu": nn.ReLU,
+}
 
-Default_NumMLP_Config = dict(
-    hidden_features=128,
-    out_features=128,
-    activation="leaky_relu",
-    num_layers=1,
-    dropout_prob=0.1,
-    normalization="layer_norm",
-)
-
-Default_FusionMLP_Config = dict(
-    adapt_in_features="max",
-    hidden_features=[128],
-    activation="leaky_relu",
-    dropout_prob=0.1,
-    normalization="layer_norm",
-)
-
-Default_GCN_Config = dict(
-    in_feats=128,
-    out_feats=128,
-    norm='both',
-)
+FUSION_HIDDEN_SIZE: Final[int] = 128
 
 
-class tabGNN(nn.Module):
+class tabGNN_MM(nn.Module):
     def __init__(self, 
                  num_categories: List[int],
                  num_numerical_feats: int,
                  num_classes: int,
         ):
+        """
+        Tabular GNN for automm derived tab features
+        """
         super().__init__()
         # set tabular feature encoder
-        global Default_CatMLP_Config, Default_NumMLP_Config, Default_FusionMLP_Config
-        self.cat_mlp = CategoricalMLP(CATEGORICAL_MLP, num_categories, **Default_CatMLP_Config)
-        self.num_mlp = NumericalMLP(NUMERICAL_MLP, num_numerical_feats, **Default_NumMLP_Config)
-        self.tab_encoder = MultimodalFusionMLP(FUSION_MLP, models=[self.cat_mlp, self.num_mlp], num_classes=num_classes, **Default_FusionMLP_Config)
+        self.cat_mlp = CategoricalMLP(CATEGORICAL_MLP, num_categories, **tabGNN_MM.get_default_cat_mlp_config())
+        self.num_mlp = NumericalMLP(NUMERICAL_MLP, num_numerical_feats, **tabGNN_MM.get_default_num_mlp_config())
+        self.tab_encoder = MultimodalFusionMLP(FUSION_MLP, models=[self.cat_mlp, self.num_mlp], num_classes=num_classes, **tabGNN_MM.get_default_fusion_mlp_config())
         # set gnn
-        global Default_GCN_Config
-        self.gcn1 = GraphConv(activation=nn.LeakyReLU(), **Default_GCN_Config)
+        self.gcn1 = GraphConv(activation=nn.LeakyReLU(), **tabGNN_MM.get_default_gcn_config())
         self.gcn2 = GraphConv(in_feats=self.gcn1._out_feats, out_feats=num_classes, norm='both')
 
     def forward(self, batch: dict, g: dgl.DGLGraph):
@@ -70,6 +48,22 @@ class tabGNN(nn.Module):
         node_feats = self.gcn1(g, node_feats, edge_weight=g.edata['w'])
         node_feats = self.gcn2(g, node_feats, edge_weight=g.edata['w'])
         return node_feats
+
+    @staticmethod
+    def get_default_cat_mlp_config():
+        return dict(out_features=128, activation="leaky_relu", num_layers=1, dropout_prob=0.1, normalization="layer_norm")
+
+    @staticmethod
+    def get_default_num_mlp_config():
+        return dict(hidden_features=128, out_features=128, activation="leaky_relu", num_layers=1, dropout_prob=0.1, normalization="layer_norm")
+
+    @staticmethod
+    def get_default_fusion_mlp_config():
+        return dict(adapt_in_features="max", hidden_features=[128], activation="leaky_relu", dropout_prob=0.1, normalization="layer_norm")
+
+    @staticmethod
+    def get_default_gcn_config():
+        return dict(in_feats=128, out_feats=128, norm='both')
 
 
 class TabEncoder(nn.Module):
@@ -150,23 +144,195 @@ class TabEncoder(nn.Module):
         return params
 
 
-class GCN(nn.ModuleList):
+class GAT(nn.Module):
     def __init__(self,
                  in_feats: int,
-                 num_classes: int):
+                 out_feats: int,
+                 num_heads: List[int]=[3,1],
+                 feat_dropout_prob: float=0.1,
+                 residual: bool=True):
         super().__init__()
-        #self.gnn1 = GraphConv(in_feats=in_feats, out_feats=num_classes, norm='both')
-        #self.gnn2 = GraphConv(in_feats=in_feats, out_feats=num_classes, norm='both')
-        num_heads = 3
-        dropout_prob = 0.1
-        self.gnn1 = GATConv(in_feats, in_feats, num_heads=num_heads, feat_drop=dropout_prob, attn_drop=dropout_prob, residual=True, activation=F.elu)
-        self.gnn2 = GATConv(in_feats*num_heads, num_classes, num_heads=1, feat_drop=dropout_prob, attn_drop=dropout_prob, residual=True)
+        self.gnn1 = GATConv(in_feats, in_feats, num_heads=num_heads[0], feat_drop=feat_dropout_prob, residual=residual)
+        self.gnn2 = GATConv(in_feats*num_heads[0], out_feats, num_heads=num_heads[1], feat_drop=feat_dropout_prob, residual=residual)
 
     def forward(self, node_feats: th.Tensor, g: dgl.DGLGraph):
         # current version batch contains the whole graph
-        # X = self.gnn1(g, node_feats, edge_weight=g.edata['w'])
-        # X = self.gnn2(g, X, edge_weight=g.edata['w'])
-        X = self.gnn1(g, node_feats)
+        X = F.elu(self.gnn1(g, node_feats))
         X = self.gnn2(g, X.view(X.shape[0], -1))
         X = X.view(X.shape[0], -1)
         return X
+
+
+class Unit(nn.Module):
+    """
+    One MLP layer. It orders the operations as: norm -> fc -> act_fn -> dropout
+    """
+
+    def __init__(
+        self,
+        normalization: str,
+        in_features: int,
+        out_features: int,
+        activation: str,
+        dropout_prob: float,
+    ):
+        """
+        Parameters
+        ----------
+        normalization
+            Name of activation function.
+        in_features
+            Dimension of input features.
+        out_features
+            Dimension of output features.
+        activation
+            Name of activation function.
+        dropout_prob
+            Dropout probability.
+        """
+        super().__init__()
+        if normalization == "layer_norm":
+            self.norm = nn.LayerNorm(in_features)
+        elif normalization == "batch_norm":
+            self.norm = nn.BatchNorm1d(in_features)
+        else:
+            raise ValueError(f"unknown normalization: {normalization}")
+        self.fc = nn.Linear(in_features, out_features)
+        self.act_fn = ALL_ACT_LAYERS[activation]()
+        self.dropout = nn.Dropout(dropout_prob)
+
+    def forward(self, x):
+        # pre normalization
+        x = self.norm(x)
+        x = self.fc(x)
+        x = self.act_fn(x)
+        x = self.dropout(x)
+        return x
+
+
+class MLP(nn.Module):
+    """
+    Multi-layer perceptron (MLP). If the hidden or output feature dimension is
+    not provided, we assign it the input feature dimension.
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        hidden_features: Optional[int] = None,
+        out_features: Optional[int] = None,
+        num_layers: Optional[int] = 1,
+        activation: Optional[str] = "leaky_relu",
+        dropout_prob: Optional[float] = 0.5,
+        normalization: Optional[str] = "layer_norm",
+    ):
+        """
+        Parameters
+        ----------
+        in_features
+            Dimension of input features.
+        hidden_features
+            Dimension of hidden features.
+        out_features
+            Dimension of output features.
+        num_layers
+            Number of layers.
+        activation
+            Name of activation function.
+        dropout_prob
+            Dropout probability.
+        normalization
+            Name of normalization function.
+        """
+        super().__init__()
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+
+        layers = []
+        for _ in range(num_layers):
+            per_unit = Unit(
+                normalization=normalization,
+                in_features=in_features,
+                out_features=hidden_features,
+                activation=activation,
+                dropout_prob=dropout_prob,
+            )
+            in_features = hidden_features
+            layers.append(per_unit)
+        if out_features != hidden_features:
+            self.fc_out = nn.Linear(hidden_features, out_features)
+        else:
+            self.fc_out = None
+        self.layers = nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = self.layers(x)
+        if self.fc_out is not None:
+            return self.fc_out(x)
+        else:
+            return x
+
+
+class MultiplexGNN(nn.Module):
+    def __init__(self,
+                 num_categs_per_feature: List[int],
+                 numerical_dims: int,
+                 text_feats: int,
+                 image_feats: int,
+                 num_classes: int,
+                 gnn_out_feats: int = FUSION_HIDDEN_SIZE,
+                 dropout_prob: float = 0.1,
+                 ):
+        super().__init__()
+        # tab_encoder receive both categorical and numerical preproessed features
+        self.tab_encoder = TabEncoder(num_categs_per_feature, numerical_dims)
+        self.tab_gnn = GAT(self.tab_encoder.out_feats, gnn_out_feats)
+        # text modality
+        self.txt_encoder = nn.Linear(text_feats, gnn_out_feats)
+        self.txt_gnn = GAT(gnn_out_feats, gnn_out_feats)
+        # image modality
+        self.img_encoder = nn.Linear(image_feats, gnn_out_feats)
+        self.img_gnn = GAT(gnn_out_feats, gnn_out_feats)
+        # fusion
+        self.attn_fc = nn.Sequential(
+            nn.Linear(gnn_out_feats, gnn_out_feats//4),
+            nn.Tanh(),
+            nn.Dropout(dropout_prob),
+            nn.Linear(gnn_out_feats//4, 1, bias=False),
+            )
+        self.fusion_mlp = MLP(gnn_out_feats, hidden_features=gnn_out_feats//2, out_features=num_classes, num_layers=1, dropout_prob=dropout_prob)
+
+    def cal_attn(self, fused_X: th.Tensor) -> th.Tensor:
+        # fused_X: (n_modality, H)
+        scores = self.attn_fc(fused_X)  # (n_modality, 1)
+        attns = F.softmax(scores, dim=0)  # (n_modality, 1)
+        return attns
+
+    def forward(self, 
+                data_batch: Dict[str, th.Tensor],
+                tab_g: dgl.DGLGraph,
+                txt_g: dgl.DGLGraph,
+                img_g: dgl.DGLGraph,
+                ) -> th.Tensor:
+        # data_batch contains key
+        # vector: numerical feats
+        # embed: categorical feats
+        # text: text feats
+        # image: image feats
+        tab_embs = self.tab_encoder(data_batch)
+        tab_embs = self.tab_gnn(tab_embs, tab_g)  # (N_nodes, H)
+        txt_embs = self.txt_encoder(data_batch['text'])
+        txt_embs = self.txt_gnn(txt_embs, txt_g)
+        img_embs = self.img_encoder(data_batch['image'])
+        img_embs = self.img_gnn(img_embs, img_g)
+        # cal attention score
+        fused_pooled_embs = th.cat([
+            th.mean(tab_embs, dim=0, keepdim=True), 
+            th.mean(txt_embs, dim=0, keepdim=True),
+            th.mean(img_embs, dim=0, keepdim=True),
+            ], dim=0)   # (n_modality, H)
+        attns = self.cal_attn(fused_pooled_embs)   # (n_modality, 1)
+        fused_embs = th.stack([tab_embs, txt_embs, img_embs], dim=-1)  # (N_nodes, H, n_modality)
+        fused_embs = th.matmul(fused_embs, attns.squeeze(1))   # (N_nodes, H)
+        logits = self.fusion_mlp(fused_embs)  # (N_nodes, n_classes)
+        return logits
