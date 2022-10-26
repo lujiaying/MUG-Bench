@@ -289,6 +289,7 @@ class MultiplexGNN(nn.Module):
             ], dim=0)   # (n_modality, H)
         attns = self.cal_attn(fused_pooled_embs)   # (n_modality, 1)
         fused_embs = th.stack([tab_embs, txt_embs, img_embs], dim=-1)  # (N_nodes, H, n_modality)
+        fused_embs = fused_embs[mask]
         fused_embs = th.matmul(fused_embs, attns.squeeze(1))   # (N_nodes, H)
         logits = self.fusion_mlp(fused_embs)  # (N_nodes, n_classes)
         return logits
