@@ -1,7 +1,6 @@
 import os
 from typing import Final
 
-from py3nvml import py3nvml
 import numpy as np
 import torch
 
@@ -10,17 +9,27 @@ IMG_COL: Final[str] = 'Image Path'
 
 
 def get_exp_constraint(time_limit_in_second: int) -> str:
-    #cpu_count = psutil.cpu_count()
-    cpu_count = len(os.sched_getaffinity(0))
     hour = int(round(time_limit_in_second/3600, 0))
-    py3nvml.nvmlInit()
-    device_count = py3nvml.nvmlDeviceGetCount()
-    # TODO: cpu_count need to be specified by SBATCH..
+    resource = get_exp_resource()
+    cpu_count = resource['cpu']
+    gpu_count = resource['gpu']
     constraint = f'{hour}h{cpu_count}c'
-    if device_count > 0:
-        handle = py3nvml.nvmlDeviceGetHandleByIndex(0)
-        constraint = f'{constraint}-{py3nvml.nvmlDeviceGetName(handle)}'
+    if gpu_count > 0:
+        constraint = f'{constraint}-{gpu_count}g'
     return constraint
+
+
+def get_exp_resource() -> dict:
+    visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", None)
+    if visible_devices is not None:
+        gpu_count = len(visible_devices.split(','))
+    else:
+        gpu_count = 0
+    resource = dict(
+            cpu=len(os.sched_getaffinity(0)),
+            gpu=gpu_count,
+            )
+    return resource
 
 
 def prepare_ag_dataset(dataset_dir: str, include_image_col: bool = True) -> tuple:
@@ -37,6 +46,18 @@ def prepare_ag_dataset(dataset_dir: str, include_image_col: bool = True) -> tupl
         test_data[IMG_COL] = test_data[IMG_COL].apply(image_id_to_path_func)
         feature_metadata = feature_metadata.add_special_types({IMG_COL: ['image_path']})
     return train_data, dev_data, test_data, feature_metadata
+
+
+def get_multiclass_metrics(y_true: np.ndarray, y_pred_proba: np.ndarray) -> dict:
+    from sklearn.metrics import accuracy_score, balanced_accuracy_score, matthews_corrcoef, log_loss
+    y_pred = np.argmax(y_pred_proba, axis=1)
+    results = dict(
+            accuracy=accuracy_score(y_true, y_pred),
+            balanced_accuracy=balanced_accuracy_score(y_true, y_pred),
+            mcc=matthews_corrcoef(y_true, y_pred),
+            log_loss=log_loss(y_true, y_pred_proba)
+            )
+    return results
 
 
 class EarlyStopping:
@@ -93,3 +114,4 @@ if __name__ == '__main__':
     time_limit = 3600
     constraint = get_exp_constraint(time_limit)
     print(f'[DEBUG] constraint={constraint} for input time_limit={time_limit}')
+    print(f'[DEBUG] {get_exp_resource()=}')
