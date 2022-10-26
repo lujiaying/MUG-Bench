@@ -4,7 +4,7 @@ import torch as th
 from torch import nn
 import torch.nn.functional as F
 import dgl
-from dgl.nn import GraphConv, GATConv
+from dgl.nn import GATConv
 from autogluon.multimodal.models import CategoricalMLP, NumericalMLP, MultimodalFusionMLP
 from autogluon.multimodal.constants import CATEGORICAL_MLP, NUMERICAL_MLP, FUSION_MLP
 from autogluon.tabular.models.tabular_nn.utils.nn_architecture_utils import get_embed_sizes
@@ -17,53 +17,6 @@ ALL_ACT_LAYERS: Final[Dict] = {
 }
 
 FUSION_HIDDEN_SIZE: Final[int] = 128
-
-
-class tabGNN_MM(nn.Module):
-    def __init__(self, 
-                 num_categories: List[int],
-                 num_numerical_feats: int,
-                 num_classes: int,
-        ):
-        """
-        Tabular GNN for automm derived tab features
-        """
-        super().__init__()
-        # set tabular feature encoder
-        self.cat_mlp = CategoricalMLP(CATEGORICAL_MLP, num_categories, **tabGNN_MM.get_default_cat_mlp_config())
-        self.num_mlp = NumericalMLP(NUMERICAL_MLP, num_numerical_feats, **tabGNN_MM.get_default_num_mlp_config())
-        self.tab_encoder = MultimodalFusionMLP(FUSION_MLP, models=[self.cat_mlp, self.num_mlp], num_classes=num_classes, **tabGNN_MM.get_default_fusion_mlp_config())
-        # set gnn
-        self.gcn1 = GraphConv(activation=nn.LeakyReLU(), **tabGNN_MM.get_default_gcn_config())
-        self.gcn2 = GraphConv(in_feats=self.gcn1._out_feats, out_feats=num_classes, norm='both')
-
-    def forward(self, batch: dict, g: dgl.DGLGraph):
-        """
-        Please refer to the forward() function of MultimodalFusionMLP
-        https://github.com/awslabs/autogluon/blob/master/multimodal/src/autogluon/multimodal/models/fusion.py
-        """
-        # current version batch contains the whole graph
-        ret = self.tab_encoder(batch)
-        node_feats = ret[FUSION_MLP]['features']
-        node_feats = self.gcn1(g, node_feats, edge_weight=g.edata['w'])
-        node_feats = self.gcn2(g, node_feats, edge_weight=g.edata['w'])
-        return node_feats
-
-    @staticmethod
-    def get_default_cat_mlp_config():
-        return dict(out_features=128, activation="leaky_relu", num_layers=1, dropout_prob=0.1, normalization="layer_norm")
-
-    @staticmethod
-    def get_default_num_mlp_config():
-        return dict(hidden_features=128, out_features=128, activation="leaky_relu", num_layers=1, dropout_prob=0.1, normalization="layer_norm")
-
-    @staticmethod
-    def get_default_fusion_mlp_config():
-        return dict(adapt_in_features="max", hidden_features=[128], activation="leaky_relu", dropout_prob=0.1, normalization="layer_norm")
-
-    @staticmethod
-    def get_default_gcn_config():
-        return dict(in_feats=128, out_feats=128, norm='both')
 
 
 class TabEncoder(nn.Module):
@@ -295,17 +248,18 @@ class MultiplexGNN(nn.Module):
         self.img_gnn = GAT(gnn_out_feats, gnn_out_feats)
         # fusion
         self.attn_fc = nn.Sequential(
-            nn.Linear(gnn_out_feats, gnn_out_feats//4),
+            nn.Linear(gnn_out_feats, gnn_out_feats//2),
             nn.Tanh(),
             nn.Dropout(dropout_prob),
-            nn.Linear(gnn_out_feats//4, 1, bias=False),
+            nn.Linear(gnn_out_feats//2, 1, bias=False),
             )
-        self.fusion_mlp = MLP(gnn_out_feats, hidden_features=gnn_out_feats//2, out_features=num_classes, num_layers=1, dropout_prob=dropout_prob)
+        self.fusion_mlp = MLP(gnn_out_feats, hidden_features=gnn_out_feats//2, 
+                              out_features=num_classes, num_layers=1, dropout_prob=dropout_prob)
 
     def cal_attn(self, fused_X: th.Tensor) -> th.Tensor:
-        # fused_X: (n_modality, H)
-        scores = self.attn_fc(fused_X)  # (n_modality, 1)
-        attns = F.softmax(scores, dim=0)  # (n_modality, 1)
+        # fused_X: (*, H)
+        scores = self.attn_fc(fused_X)  # (*, 1)
+        attns = F.softmax(scores, dim=0)  # (*, 1)
         return attns
 
     def forward(self, 
@@ -313,6 +267,7 @@ class MultiplexGNN(nn.Module):
                 tab_g: dgl.DGLGraph,
                 txt_g: dgl.DGLGraph,
                 img_g: dgl.DGLGraph,
+                mask: th.BoolTensor,
                 ) -> th.Tensor:
         # data_batch contains key
         # vector: numerical feats
@@ -325,6 +280,7 @@ class MultiplexGNN(nn.Module):
         txt_embs = self.txt_gnn(txt_embs, txt_g)
         img_embs = self.img_encoder(data_batch['image'])
         img_embs = self.img_gnn(img_embs, img_g)
+        # global attention version
         # cal attention score
         fused_pooled_embs = th.cat([
             th.mean(tab_embs, dim=0, keepdim=True), 

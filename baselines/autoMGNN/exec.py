@@ -24,18 +24,21 @@ from autogluon.multimodal.data.infer_types import infer_column_types
 from autogluon.core.constants import BINARY, MULTICLASS
 from autogluon.multimodal import MultiModalPredictor
 from autogluon.features.generators import AutoMLPipelineFeatureGenerator
-from autogluon.multimodal.data import MultiModalFeaturePreprocessor
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.metrics import accuracy_score
 from sklearn import preprocessing
 import dgl
 from scipy.sparse import coo_matrix
+from ray import tune
+from hyperopt import hp
 
-from ..utils import get_exp_constraint, prepare_ag_dataset, IMG_COL
+from ..utils import get_exp_constraint, prepare_ag_dataset, IMG_COL, get_multiclass_metrics, EarlyStopping, get_exp_resource
 from ..autogluon.exec import get_metric_names
-from .models import TabEncoder, MLP, FUSION_HIDDEN_SIZE, MultiplexGNN
+from .models import MultiplexGNN
+
 
 __version__ = '0.1'
+CKPT_FNAME = 'model.pt'
 
 
 def merge_train_dev_test_dfs(
@@ -106,42 +109,6 @@ def generate_tab_feature_by_tabular_pipeline(
             (num_categs_per_feature, nn.feature_arraycol_map, nn.feature_type_map, le.classes_.shape[0])
 
 
-def generate_tab_feature_by_mm_pipeline(
-        train_df: TabularDataset, 
-        dev_df: TabularDataset, 
-        test_df: TabularDataset,
-        col_label: str,
-        ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray], Tuple, MultiModalFeaturePreprocessor]:
-    """
-    @note: deprecated due to poor performance
-    """
-    from autogluon.multimodal.utils import init_df_preprocessor, get_config
-    column_types = infer_column_types(
-            data=train_df,
-            valid_data=dev_df,
-            label_columns=col_label,
-        )
-    config = get_config()
-    #config.data.categorical.minimum_cat_count = 2
-    #config.data.categorical.maximum_num_cat = 256
-    config.data.categorical.convert_to_text = False
-    df_preprocessor = init_df_preprocessor(
-            config=config.data,
-            column_types=column_types,
-            label_column=col_label,
-            train_df_x=train_df.drop(columns=col_label),
-            train_df_y=train_df[col_label],
-        )
-    # print(df_preprocessor.text_feature_names)
-    print(f'[INFO] categorical features: {df_preprocessor.categorical_feature_names}')
-    print(f'[INFO] numerical features: {df_preprocessor.numerical_feature_names}')
-    all_data, all_label, masks_tuple = merge_train_dev_test_dfs(train_df, dev_df, test_df, col_label)
-    all_cat_feat = df_preprocessor.transform_categorical(all_data)
-    all_num_feat = df_preprocessor.transform_numerical(all_data)
-    all_label = df_preprocessor.transform_label(all_data)
-    return all_cat_feat, all_num_feat, all_label, (train_mask, dev_mask, test_mask), df_preprocessor
-
-
 def pack_cate_text_cols_to_one_sent(elem: Dict[str, Any]) -> str:
     sentence = ''
     for k, v in elem.items():
@@ -189,6 +156,156 @@ def construct_sim_based_graph(feats: np.ndarray, expect_sparsity: float = 0.5):
     return cosine_sim_matrix
 
 
+def train_mgnn(config: dict,
+               multimodal_feats: Tuple[np.ndarray, np.ndarray, np.ndarray],
+               data_batch: Dict[str, th.Tensor],
+               all_labels: pd.Series, 
+               num_classes: int, 
+               masks_tuple: Tuple[np.ndarray, np.ndarray, np.ndarray],
+               tab_feat_params: dict,
+               eval_metric: str,
+               num_epochs: int = 1000, 
+               ):
+    """
+    Args:
+        config: current trial configuration
+            - "sim_graph_sparsity": float, expected sparsity of the generated similarity-based graph
+            - "lr": float, learning rate for optimizer
+    """
+    # ===========
+    # generate graphs
+    tab_feats, text_feats, image_feats = multimodal_feats
+    expect_sparsity = config['sim_graph_sparsity']
+    tab_graph_Adj = construct_sim_based_graph(tab_feats, expect_sparsity)
+    print(f'[INFO] sparsity of simlarity based graph from tabular features = {cal_sparsity(tab_graph_Adj)}')
+    text_graph_Adj = construct_sim_based_graph(text_feats, expect_sparsity)
+    print(f'[INFO] sparsity of simlarity based graph from text and categorical features = {cal_sparsity(text_graph_Adj)}')
+    image_graph_Adj = construct_sim_based_graph(image_feats, expect_sparsity)
+    print(f'[INFO] sparsity of simlarity based graph from image features = {cal_sparsity(image_graph_Adj)}')
+    # ===========
+    # create model
+    device = th.device("cuda" if th.cuda.is_available() else "cpu")
+    num_categs_per_feature = tab_feat_params['num_categs_per_feature']
+    vector_dims = tab_feat_params['vector_dims']
+    multiplex_gnn = MultiplexGNN(num_categs_per_feature, vector_dims, text_feats.shape[1], image_feats.shape[1], num_classes)
+    multiplex_gnn.to(device)
+    if config['optimizer'] == 'adamw':
+        opt = th.optim.AdamW(multiplex_gnn.parameters())  # default lr=1e-3, weight_decay=1e-2
+        early_stop_patience = 25
+        scheduler = th.optim.lr_scheduler.CosineAnnealingWarmRestarts(opt, T_0=50, eta_min=1e-6)
+    elif config['optimizer'] == 'sgd':
+        # warm up with AdamW
+        opt = th.optim.SGD(multiplex_gnn.parameters(), lr=0.1, momentum=0.9, nesterov=True)
+        early_stop_patience = 40
+        scheduler = th.optim.lr_scheduler.OneCycleLR(opt, max_lr=1e-2, total_steps=num_epochs)
+    else:
+        raise ValueError(f'[ERROR] Not support optimizer={config["optimizer"]}')
+    loss_fn = th.nn.CrossEntropyLoss()
+
+    # ===========
+    # prepare data
+    tab_g = dgl.add_self_loop(dgl.from_scipy(coo_matrix(tab_graph_Adj)))
+    tab_g = tab_g.to(device)
+    txt_g = dgl.add_self_loop(dgl.from_scipy(coo_matrix(text_graph_Adj)))
+    txt_g = txt_g.to(device)
+    img_g = dgl.add_self_loop(dgl.from_scipy(coo_matrix(image_graph_Adj)))
+    img_g = img_g.to(device)
+    train_mask, dev_mask, _ = masks_tuple
+    train_labels = th.tensor(all_labels[train_mask]).to(device)
+    dev_labels = th.tensor(all_labels[dev_mask]).to(device)
+    train_mask = th.tensor(train_mask, dtype=th.bool).to(device)
+    dev_mask = th.tensor(dev_mask, dtype=th.bool).to(device)
+
+    # ===========
+    # do training
+    global CKPT_FNAME
+    early_stop = EarlyStopping(patience=early_stop_patience, path=f'./{CKPT_FNAME}')
+    for epoch in range(num_epochs):
+        multiplex_gnn.train()
+        logits = multiplex_gnn(data_batch, tab_g, txt_g, img_g, train_mask)
+        loss = loss_fn(logits, train_labels)
+        pred_probas = F.softmax(logits, dim=1)
+        train_metric_scores = get_multiclass_metrics(train_labels.cpu().numpy(), pred_probas.detach().cpu().numpy())
+        # if epoch % log_per_epoch == 0:
+        #     print(f'[DEBUG] TRAIN {epoch=} loss={loss.item()}, metrics={train_metric_scores}')
+        # backward propagation
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        scheduler.step()
+        # do eval
+        with th.no_grad():
+            multiplex_gnn.eval()
+            logits = multiplex_gnn(data_batch, tab_g, txt_g, img_g, dev_mask)
+            loss = loss_fn(logits, dev_labels)
+            pred_probas = F.softmax(logits, dim=1)
+            val_metric_scores = get_multiclass_metrics(dev_labels.cpu().numpy(), pred_probas.detach().cpu().numpy())
+            early_stop(loss.item(), multiplex_gnn)
+            val_score = val_metric_scores[eval_metric]
+            train_score = train_metric_scores[eval_metric]
+            if eval_metric == 'log_loss':
+                val_score = -val_score   # log_loss the less the better
+                train_score = -train_score
+            tune.report(val_score=val_score, val_acc=val_metric_scores['accuracy'],
+                        train_score=train_score, train_acc=train_metric_scores['accuracy'])
+            # if epoch % log_per_epoch == 0:
+            #     print(f'[DEBUG] VAL {epoch=} loss={loss.item()}, metrics={val_metric_scores}')
+            #print(np.asarray(np.unique(preds[dev_mask].detach().cpu().numpy(), return_counts=True)).T)
+        if early_stop.early_stop is True:
+            print(f'[INFO] early stop at Epoch={epoch}')
+            break
+
+
+def do_test(config: dict,
+            ckpt_path: str,
+            multimodal_feats: Tuple[np.ndarray, np.ndarray, np.ndarray],
+            data_batch: Dict[str, th.Tensor],
+            all_labels: pd.Series, 
+            num_classes: int, 
+            masks_tuple: Tuple[np.ndarray, np.ndarray, np.ndarray],
+            tab_feat_params: dict,
+            ) -> dict:
+    # ===========
+    # generate graphs
+    tab_feats, text_feats, image_feats = multimodal_feats
+    expect_sparsity = config['sim_graph_sparsity']
+    tab_graph_Adj = construct_sim_based_graph(tab_feats, expect_sparsity)
+    print(f'[INFO] sparsity of simlarity based graph from tabular features = {cal_sparsity(tab_graph_Adj)}')
+    text_graph_Adj = construct_sim_based_graph(text_feats, expect_sparsity)
+    print(f'[INFO] sparsity of simlarity based graph from text and categorical features = {cal_sparsity(text_graph_Adj)}')
+    image_graph_Adj = construct_sim_based_graph(image_feats, expect_sparsity)
+    print(f'[INFO] sparsity of simlarity based graph from image features = {cal_sparsity(image_graph_Adj)}')
+    # ===========
+    # create model
+    device = th.device("cuda" if th.cuda.is_available() else "cpu")
+    num_categs_per_feature = tab_feat_params['num_categs_per_feature']
+    vector_dims = tab_feat_params['vector_dims']
+    multiplex_gnn = MultiplexGNN(num_categs_per_feature, vector_dims, text_feats.shape[1], image_feats.shape[1], num_classes)
+    state_dict = th.load(ckpt_path)
+    print(f'[INFO] load_state_dict from {ckpt_path}')
+    multiplex_gnn.load_state_dict(state_dict)
+    multiplex_gnn.to(device)
+    # ===========
+    # prepare data
+    tab_g = dgl.add_self_loop(dgl.from_scipy(coo_matrix(tab_graph_Adj)))
+    tab_g = tab_g.to(device)
+    txt_g = dgl.add_self_loop(dgl.from_scipy(coo_matrix(text_graph_Adj)))
+    txt_g = txt_g.to(device)
+    img_g = dgl.add_self_loop(dgl.from_scipy(coo_matrix(image_graph_Adj)))
+    img_g = img_g.to(device)
+    _, _, test_mask = masks_tuple
+    test_labels = th.tensor(all_labels[test_mask]).to(device)
+    test_mask = th.tensor(test_mask, dtype=th.bool).to(device)
+    # ===========
+    # do test
+    with th.no_grad():
+        multiplex_gnn.eval()
+        logits = multiplex_gnn(data_batch, tab_g, txt_g, img_g, test_mask)
+        pred_probas = F.softmax(logits, dim=1)
+        test_metric_scores = get_multiclass_metrics(test_labels.cpu().numpy(), pred_probas.detach().cpu().numpy())
+    return test_metric_scores
+    
+
 def main(args: argparse.Namespace):
     if not os.path.exists(args.exp_save_dir):
         os.makedirs(args.exp_save_dir)
@@ -206,42 +323,27 @@ def main(args: argparse.Namespace):
     # Text and Image Emb from CLIP
     text_feats, image_feats, ti_labels, ti_masks_tuple = generate_text_image_feature_by_pretrained_CLIP(train_df, dev_df, test_df, col_label)
     print(f'[info] text feats shape={text_feats.shape}, image feats shape={image_feats.shape}')
-    # TODO: HPO for graph construction...., sparsity level..
-    expect_sparsity = 0.75
-    text_graph_Adj = construct_sim_based_graph(text_feats, expect_sparsity)
-    print(f'[INFO] sparsity of simlarity based graph from text and categorical features = {cal_sparsity(text_graph_Adj)}')
-    image_graph_Adj = construct_sim_based_graph(image_feats, expect_sparsity)
-    print(f'[INFO] sparsity of simlarity based graph from image features = {cal_sparsity(image_graph_Adj)}')
-
     # ===========
     # Tab feature from ag Tabular AutoMLPipelineFeatureGenerator
-    tab_feats, all_labels, (train_mask, dev_mask, test_mask), \
+    tab_feats, all_labels, masks_tuple, \
        (num_categs_per_feature, feature_arraycol_map, feature_type_map, num_classes) \
             = generate_tab_feature_by_tabular_pipeline(train_df, dev_df, test_df, col_label)
+    vector_indices = [indices for ((_, indices), (_, f_type)) in zip(feature_arraycol_map.items(), feature_type_map.items()) if f_type == 'vector']
+    vector_indices = list(itertools.chain(*vector_indices))
+    vector_dims = len(vector_indices)
+    tab_feat_params = dict(
+            num_categs_per_feature=num_categs_per_feature,
+            vector_dims=vector_dims,
+            )
     print(f'[info] tabular feats shape={tab_feats.shape}, label shape={all_labels.shape}')
     assert ti_labels.tolist() == all_labels.tolist()
-    # print(np.asarray(np.unique(all_labels, return_counts=True)).T)
-    tab_graph_Adj = construct_sim_based_graph(tab_feats, expect_sparsity)
-    print(f'[INFO] sparsity of simlarity based graph from tabular features = {cal_sparsity(tab_graph_Adj)}')
-
-    device = th.device("cuda" if th.cuda.is_available() else "cpu")
-    # ===========
-    # create model
-    # create tab model
-    vector_idcies = [indices for ((_, indices), (_, f_type)) in zip(feature_arraycol_map.items(), feature_type_map.items()) if f_type == 'vector']
-    vector_idcies = list(itertools.chain(*vector_idcies))
-    vector_dims = len(vector_idcies)
-    multiplex_gnn = MultiplexGNN(num_categs_per_feature, vector_dims, text_feats.shape[1], image_feats.shape[1], num_classes)
-
-    opt = th.optim.Adam(multiplex_gnn.parameters(), lr=3e-4)
-    multiplex_gnn.to(device)
-
     # ===========
     # prepare data
+    device = th.device("cuda" if th.cuda.is_available() else "cpu")
     data_batch = {}
-    if multiplex_gnn.tab_encoder.has_vector_features:
-        data_batch['vector'] = th.tensor(tab_feats[:, vector_idcies]).to(device)
-    if multiplex_gnn.tab_encoder.has_embed_features:
+    if vector_dims > 0:
+        data_batch['vector'] = th.tensor(tab_feats[:, vector_indices]).to(device)
+    if len(num_categs_per_feature) > 0:
         all_embed_feats = []
         for ((_, indices), (_, f_type)) in zip(feature_arraycol_map.items(), feature_type_map.items()):
             if f_type != 'embed':
@@ -251,37 +353,81 @@ def main(args: argparse.Namespace):
         data_batch['embed'] = all_embed_feats
     data_batch['text'] = th.tensor(text_feats).to(device)
     data_batch['image'] = th.tensor(image_feats).to(device)
-    tab_g = dgl.add_self_loop(dgl.from_scipy(coo_matrix(tab_graph_Adj)))
-    tab_g = tab_g.to(device)
-    txt_g = dgl.add_self_loop(dgl.from_scipy(coo_matrix(text_graph_Adj)))
-    txt_g = txt_g.to(device)
-    img_g = dgl.add_self_loop(dgl.from_scipy(coo_matrix(image_graph_Adj)))
-    img_g = img_g.to(device)
-    all_labels = th.tensor(all_labels).to(device)
-    train_mask = th.tensor(train_mask, dtype=th.bool).to(device)
-    dev_mask = th.tensor(dev_mask, dtype=th.bool).to(device)
-    test_mask = th.tensor(test_mask, dtype=th.bool).to(device)
 
-    for epoch in range(500):
-        multiplex_gnn.train()
-        logits = multiplex_gnn(data_batch, tab_g, txt_g, img_g)
-        loss = F.cross_entropy(logits[train_mask], all_labels[train_mask])
-        _, preds = th.max(logits, dim=1)
-        acc = accuracy_score(all_labels[train_mask].cpu(), preds[train_mask].cpu())
-        if epoch % 20 == 0:
-            print(f'[DEBUG] {epoch=} {loss.item()=}, {acc=}')
-        # backward propagation
-        opt.zero_grad()
-        loss.backward()
-        opt.step()
-        # do eval
-        if epoch % 20 == 0:
-            multiplex_gnn.eval()
-            logits = multiplex_gnn(data_batch, tab_g, txt_g, img_g)
-            _, preds = th.max(logits, dim=1)
-            acc = accuracy_score(all_labels[test_mask].cpu(), preds[test_mask].cpu())
-            print(f'[DEBUG] {epoch=} test_acc={acc}')
-            #print(np.asarray(np.unique(preds[dev_mask].detach().cpu().numpy(), return_counts=True)).T)
+    # ===========
+    # Train model using HPO
+    search_space = {
+            "sim_graph_sparsity": tune.grid_search([0.5, 0.75, 0.9]),
+            "optimizer": tune.grid_search(['adamw']),
+            }
+    ray_dir = os.path.join(args.exp_save_dir, 'ray_results')
+    ts = time.time()
+    # ray version=1.13.0 due to autogluon
+    analysis = tune.run(
+            tune.with_parameters(train_mgnn, 
+                                 multimodal_feats=(tab_feats, text_feats, image_feats),
+                                 data_batch=data_batch,
+                                 all_labels=all_labels,
+                                 num_classes=num_classes,
+                                 masks_tuple=masks_tuple,
+                                 tab_feat_params=tab_feat_params,
+                                 eval_metric=eval_metric,
+                                 ),
+            config=search_space,
+            time_budget_s=args.fit_time_limit,
+            max_concurrent_trials=1,
+            local_dir=ray_dir,
+            resources_per_trial=get_exp_resource(),
+            metric='val_score',
+            mode='max',
+            )
+    te = time.time()
+    training_duration = round(te-ts, 1)
+    # Get a dataframe for the max accuracy seen for each trial
+    dfs = analysis.dataframe(metric='val_score', mode='max')
+    print(f'[INFO] Max val_score seen for each trial:')
+    print(dfs)
+    best_trial_config = analysis.get_best_config(metric='val_score', mode='max', scope='all')
+    print(f'[INFO] best_trial_config={best_trial_config}')
+    logdir = analysis.get_best_logdir(metric='val_score', mode="max", scope='all')
+    print(f'[INFO] best logdir={logdir}')
+    # do test
+    ts = time.time()
+    global CKPT_FNAME
+    test_metric_scores = do_test(best_trial_config, 
+                                 os.path.join(logdir, CKPT_FNAME),
+                                 multimodal_feats=(tab_feats, text_feats, image_feats),
+                                 data_batch=data_batch,
+                                 all_labels=all_labels,
+                                 num_classes=num_classes,
+                                 masks_tuple=masks_tuple,
+                                 tab_feat_params=tab_feat_params,
+                                 )
+    te = time.time()
+    predict_duration = round(te-ts, 1)
+    print(f'[DEBUG] {test_metric_scores=}')
+    te_duration = time.time()
+    duration = round(te_duration-ts_duration, 1)
+    params_to_save = args.__dict__
+    params_to_save['hpo_best_config'] = best_trial_config
+    result = dict(
+                task=info_dict['task'],
+                framework=f'AutoMultiplexGNN',
+                constraint=get_exp_constraint(args.fit_time_limit),
+                type='multiclass',
+                params=params_to_save,
+                framework_version=__version__,
+                utc=datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S'),
+                duration=duration,
+                training_duration=training_duration,
+                predict_duration=predict_duration,
+                seed=args.seed,
+            )
+    result.update(test_metric_scores)
+    exp_result_save_path = os.path.join(args.exp_save_dir, 'results.csv')
+    result_df = pd.DataFrame.from_records([result])
+    result_df.to_csv(exp_result_save_path, index=False)
+    print(f'[INFO] test result saved into {exp_result_save_path}')
 
 
 if __name__ == '__main__':
@@ -290,8 +436,6 @@ if __name__ == '__main__':
     parser.add_argument('--dataset_dir', type=str, required=True)
     parser.add_argument('--exp_save_dir', type=str, required=True)
     # optional arguments
-    parser.add_argument('--do_load_ckpt', action='store_true')
-    # please refer to https://auto.gluon.ai/dev/tutorials/multimodal/beginner_multimodal.html
     parser.add_argument('--fit_time_limit', type=int, default=3600,
             help="TabularPredictor.fit(). how long fit() should run for (wallclock time in seconds).")
     parser.add_argument('--seed', type=int, default=0)
