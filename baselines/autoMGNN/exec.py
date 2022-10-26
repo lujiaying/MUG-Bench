@@ -25,7 +25,6 @@ from autogluon.core.constants import BINARY, MULTICLASS
 from autogluon.multimodal import MultiModalPredictor
 from autogluon.features.generators import AutoMLPipelineFeatureGenerator
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.metrics import accuracy_score
 from sklearn import preprocessing
 import dgl
 from scipy.sparse import coo_matrix
@@ -66,7 +65,7 @@ def generate_tab_feature_by_tabular_pipeline(
                          dev_data: TabularDataset, 
                          test_data: TabularDataset,
                          col_label: str,
-                         ) -> Tuple[np.ndarray, pd.Series, Tuple, Tuple]:
+                         ) -> Tuple[np.ndarray, np.ndarray, Tuple, Tuple]:
     from autogluon.tabular.models.tabular_nn.torch.tabular_nn_torch import TabularNeuralNetTorchModel
     auto_ml_pipeline_feature_generator = AutoMLPipelineFeatureGenerator(
             enable_text_special_features=False, 
@@ -215,6 +214,7 @@ def train_mgnn(config: dict,
     dev_labels = th.tensor(all_labels[dev_mask]).to(device)
     train_mask = th.tensor(train_mask, dtype=th.bool).to(device)
     dev_mask = th.tensor(dev_mask, dtype=th.bool).to(device)
+    label_space = np.unique(all_labels)
 
     # ===========
     # do training
@@ -225,7 +225,8 @@ def train_mgnn(config: dict,
         logits = multiplex_gnn(data_batch, tab_g, txt_g, img_g, train_mask)
         loss = loss_fn(logits, train_labels)
         pred_probas = F.softmax(logits, dim=1)
-        train_metric_scores = get_multiclass_metrics(train_labels.cpu().numpy(), pred_probas.detach().cpu().numpy())
+        train_metric_scores = get_multiclass_metrics(train_labels.cpu().numpy(), pred_probas.detach().cpu().numpy(),
+                                                     label_space)
         # if epoch % log_per_epoch == 0:
         #     print(f'[DEBUG] TRAIN {epoch=} loss={loss.item()}, metrics={train_metric_scores}')
         # backward propagation
@@ -239,7 +240,8 @@ def train_mgnn(config: dict,
             logits = multiplex_gnn(data_batch, tab_g, txt_g, img_g, dev_mask)
             loss = loss_fn(logits, dev_labels)
             pred_probas = F.softmax(logits, dim=1)
-            val_metric_scores = get_multiclass_metrics(dev_labels.cpu().numpy(), pred_probas.detach().cpu().numpy())
+            val_metric_scores = get_multiclass_metrics(dev_labels.cpu().numpy(), pred_probas.detach().cpu().numpy(), 
+                                                       label_space)
             early_stop(loss.item(), multiplex_gnn)
             val_score = val_metric_scores[eval_metric]
             train_score = train_metric_scores[eval_metric]
@@ -296,13 +298,15 @@ def do_test(config: dict,
     _, _, test_mask = masks_tuple
     test_labels = th.tensor(all_labels[test_mask]).to(device)
     test_mask = th.tensor(test_mask, dtype=th.bool).to(device)
+    label_space = np.unique(all_labels)
     # ===========
     # do test
     with th.no_grad():
         multiplex_gnn.eval()
         logits = multiplex_gnn(data_batch, tab_g, txt_g, img_g, test_mask)
         pred_probas = F.softmax(logits, dim=1)
-        test_metric_scores = get_multiclass_metrics(test_labels.cpu().numpy(), pred_probas.detach().cpu().numpy())
+        test_metric_scores = get_multiclass_metrics(test_labels.cpu().numpy(), pred_probas.detach().cpu().numpy(),
+                                                    label_space)
     return test_metric_scores
     
 

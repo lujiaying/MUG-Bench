@@ -48,14 +48,14 @@ def prepare_ag_dataset(dataset_dir: str, include_image_col: bool = True) -> tupl
     return train_data, dev_data, test_data, feature_metadata
 
 
-def get_multiclass_metrics(y_true: np.ndarray, y_pred_proba: np.ndarray) -> dict:
+def get_multiclass_metrics(y_true: np.ndarray, y_pred_proba: np.ndarray, labels: list) -> dict:
     from sklearn.metrics import accuracy_score, balanced_accuracy_score, matthews_corrcoef, log_loss
     y_pred = np.argmax(y_pred_proba, axis=1)
     results = dict(
             accuracy=accuracy_score(y_true, y_pred),
             balanced_accuracy=balanced_accuracy_score(y_true, y_pred),
             mcc=matthews_corrcoef(y_true, y_pred),
-            log_loss=log_loss(y_true, y_pred_proba)
+            log_loss=log_loss(y_true, y_pred_proba, labels=labels)
             )
     return results
 
