@@ -24,8 +24,9 @@ from autogluon.multimodal.data.infer_types import infer_column_types
 from autogluon.core.constants import BINARY, MULTICLASS
 from autogluon.multimodal import MultiModalPredictor
 from autogluon.features.generators import AutoMLPipelineFeatureGenerator
-from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics.pairwise import cosine_similarity, rbf_kernel
 from sklearn import preprocessing
+from sklearn.neighbors import kneighbors_graph
 import dgl
 from scipy.sparse import coo_matrix
 from ray import tune
@@ -38,6 +39,18 @@ from .models import MultiplexGNN
 
 __version__ = '0.1'
 CKPT_FNAME = 'model.pt'
+
+
+def mask_data_batch(data_batch: dict, mask: th.BoolTensor) -> dict:
+    ret_batch = {}
+    for k, v in data_batch.items():
+        if k == 'embed':
+            # v is a list of tensor
+            embed_feats = [_[mask] for _ in v]
+            ret_batch[k] = embed_feats
+        else:
+            ret_batch[k] = v[mask]
+    return ret_batch
 
 
 def merge_train_dev_test_dfs(
@@ -142,9 +155,26 @@ def generate_text_image_feature_by_pretrained_CLIP(
     return text_feats, image_feats, all_label, masks_tuple
 
 
-cal_sparsity = lambda A: 1.0 - ( np.count_nonzero(A) / A.size)
+def cal_sparsity(A: coo_matrix) -> float:
+    nnz = A.getnnz()
+    size = np.prod(A.shape)
+    return 1.0 - nnz / size
 
-def construct_sim_based_graph(feats: np.ndarray, expect_sparsity: float = 0.5):
+
+def construct_graph_from_features(feats: np.ndarray, method: str, **kwargs) -> coo_matrix:
+    if method == 'cosine_sim':
+        A = construct_cosine_sim_based_graph(feats, kwargs['expect_sparsity'])
+    elif method == 'rbf_kernel':
+        A = construct_rbf_kernel_based_graph(feats, kwargs['expect_sparsity'])
+    elif method == 'knn_graph':
+        A = kneighbors_graph(feats, kwargs['n_neighbors'], mode='connectivity', include_self=False)
+        A = coo_matrix(A)
+    else:
+        raise ValueError(f'Not support method={method} for construct_graph_from_features()')
+    print(f'[info] graph shape={A.shape}, sparsity={cal_sparsity(A)}, by kwargs={kwargs}')
+    return A
+
+def construct_cosine_sim_based_graph(feats: np.ndarray, expect_sparsity: float = 0.5) -> coo_matrix:
     """
     Returns a simlarity matrix removing diagonal elements (self-loop edges)
     """
@@ -152,7 +182,18 @@ def construct_sim_based_graph(feats: np.ndarray, expect_sparsity: float = 0.5):
     np.fill_diagonal(cosine_sim_matrix, 0.0)
     threshold = np.percentile(cosine_sim_matrix, expect_sparsity*100)
     cosine_sim_matrix[cosine_sim_matrix < threshold] = 0.0
-    return cosine_sim_matrix
+    return coo_matrix(cosine_sim_matrix)
+
+
+def construct_rbf_kernel_based_graph(feats: np.ndarray, expect_sparsity: float = 0.5) -> coo_matrix:
+    """
+    Returns a simlarity matrix removing diagonal elements (self-loop edges)
+    """
+    cosine_sim_matrix = rbf_kernel(feats)
+    np.fill_diagonal(cosine_sim_matrix, 0.0)
+    threshold = np.percentile(cosine_sim_matrix, expect_sparsity*100)
+    cosine_sim_matrix[cosine_sim_matrix < threshold] = 0.0
+    return coo_matrix(cosine_sim_matrix)
 
 
 def train_mgnn(config: dict,
@@ -173,14 +214,16 @@ def train_mgnn(config: dict,
     """
     # ===========
     # generate graphs
+    train_mask, dev_mask, _ = masks_tuple
     tab_feats, text_feats, image_feats = multimodal_feats
-    expect_sparsity = config['sim_graph_sparsity']
-    tab_graph_Adj = construct_sim_based_graph(tab_feats, expect_sparsity)
-    print(f'[INFO] sparsity of simlarity based graph from tabular features = {cal_sparsity(tab_graph_Adj)}')
-    text_graph_Adj = construct_sim_based_graph(text_feats, expect_sparsity)
-    print(f'[INFO] sparsity of simlarity based graph from text and categorical features = {cal_sparsity(text_graph_Adj)}')
-    image_graph_Adj = construct_sim_based_graph(image_feats, expect_sparsity)
-    print(f'[INFO] sparsity of simlarity based graph from image features = {cal_sparsity(image_graph_Adj)}')
+    print('[INFO] Train Graph from tab, text, image...')
+    tab_graph_Adj_train = construct_graph_from_features(tab_feats[train_mask], **config['g_const'])
+    text_graph_Adj_train = construct_graph_from_features(text_feats[train_mask], **config['g_const'])
+    image_graph_Adj_train = construct_graph_from_features(image_feats[train_mask], **config['g_const'])
+    print('[INFO] Dev Graph from tab, text, image...')
+    tab_graph_Adj_dev = construct_graph_from_features(tab_feats[train_mask+dev_mask], **config['g_const'])
+    text_graph_Adj_dev = construct_graph_from_features(text_feats[train_mask+dev_mask], **config['g_const'])
+    image_graph_Adj_dev = construct_graph_from_features(image_feats[train_mask+dev_mask], **config['g_const'])
     # ===========
     # create model
     device = th.device("cuda" if th.cuda.is_available() else "cpu")
@@ -203,18 +246,22 @@ def train_mgnn(config: dict,
 
     # ===========
     # prepare data
-    tab_g = dgl.add_self_loop(dgl.from_scipy(coo_matrix(tab_graph_Adj)))
-    tab_g = tab_g.to(device)
-    txt_g = dgl.add_self_loop(dgl.from_scipy(coo_matrix(text_graph_Adj)))
-    txt_g = txt_g.to(device)
-    img_g = dgl.add_self_loop(dgl.from_scipy(coo_matrix(image_graph_Adj)))
-    img_g = img_g.to(device)
-    train_mask, dev_mask, _ = masks_tuple
+    tab_g_train = dgl.add_self_loop(dgl.from_scipy(coo_matrix(tab_graph_Adj_train)))
+    txt_g_train = dgl.add_self_loop(dgl.from_scipy(coo_matrix(text_graph_Adj_train)))
+    img_g_train = dgl.add_self_loop(dgl.from_scipy(coo_matrix(image_graph_Adj_train)))
+    tab_g_dev = dgl.add_self_loop(dgl.from_scipy(coo_matrix(tab_graph_Adj_dev))).to(device)
+    txt_g_dev = dgl.add_self_loop(dgl.from_scipy(coo_matrix(text_graph_Adj_dev))).to(device)
+    img_g_dev = dgl.add_self_loop(dgl.from_scipy(coo_matrix(image_graph_Adj_dev))).to(device)
     train_labels = th.tensor(all_labels[train_mask]).to(device)
     dev_labels = th.tensor(all_labels[dev_mask]).to(device)
-    train_mask = th.tensor(train_mask, dtype=th.bool).to(device)
-    dev_mask = th.tensor(dev_mask, dtype=th.bool).to(device)
+    train_mask = th.tensor(train_mask, dtype=th.bool).to(device)  # (N_nodes, )
+    dev_mask = th.tensor(dev_mask, dtype=th.bool).to(device)  # (N_nodes, )
     label_space = np.unique(all_labels)
+    ## data_batch already in device
+    data_batch_train = mask_data_batch(data_batch, train_mask)
+    data_batch_dev = mask_data_batch(data_batch, train_mask+dev_mask)
+    root_node_cnt = min(round(0.8*len(all_labels)), 1500)
+    sampler = dgl.dataloading.SAINTSampler(mode='walk', budget=(root_node_cnt, 2), cache=False)
 
     # ===========
     # do training
@@ -222,13 +269,20 @@ def train_mgnn(config: dict,
     early_stop = EarlyStopping(patience=early_stop_patience, path=f'./{CKPT_FNAME}')
     for epoch in range(num_epochs):
         multiplex_gnn.train()
-        logits = multiplex_gnn(data_batch, tab_g, txt_g, img_g, train_mask)
-        loss = loss_fn(logits, train_labels)
+        # random sampling over one of three graphs
+        g = random.choice([tab_g_train, txt_g_train, img_g_train])
+        node_ids = sampler.sampler(g)
+        sampling_mask = th.BoolTensor([1 if i in node_ids else 0 for i in range(g.number_of_nodes())]).to(device)
+        logits = multiplex_gnn(mask_data_batch(data_batch_train, sampling_mask), 
+                               tab_g_train.subgraph(node_ids, relabel_nodes=True, output_device=device), 
+                               txt_g_train.subgraph(node_ids, relabel_nodes=True, output_device=device), 
+                               img_g_train.subgraph(node_ids, relabel_nodes=True, output_device=device)
+                               )  # (N_nodes_train, num_classes)
+        loss = loss_fn(logits, train_labels[sampling_mask])
         pred_probas = F.softmax(logits, dim=1)
-        train_metric_scores = get_multiclass_metrics(train_labels.cpu().numpy(), pred_probas.detach().cpu().numpy(),
+        train_metric_scores = get_multiclass_metrics(train_labels[sampling_mask].cpu().numpy(), pred_probas.detach().cpu().numpy(),
                                                      label_space)
-        # if epoch % log_per_epoch == 0:
-        #     print(f'[DEBUG] TRAIN {epoch=} loss={loss.item()}, metrics={train_metric_scores}')
+        #print(f'[DEBUG] TRAIN {epoch=} loss={loss.item()}, metrics={train_metric_scores}')
         # backward propagation
         opt.zero_grad()
         loss.backward()
@@ -237,7 +291,8 @@ def train_mgnn(config: dict,
         # do eval
         with th.no_grad():
             multiplex_gnn.eval()
-            logits = multiplex_gnn(data_batch, tab_g, txt_g, img_g, dev_mask)
+            logits = multiplex_gnn(data_batch_dev, tab_g_dev, txt_g_dev, img_g_dev)  # (N_nodes_train_dev, num_classes)
+            logits = logits[dev_mask[:tab_g_dev.number_of_nodes()]]
             loss = loss_fn(logits, dev_labels)
             pred_probas = F.softmax(logits, dim=1)
             val_metric_scores = get_multiclass_metrics(dev_labels.cpu().numpy(), pred_probas.detach().cpu().numpy(), 
@@ -250,9 +305,7 @@ def train_mgnn(config: dict,
                 train_score = -train_score
             tune.report(val_score=val_score, val_acc=val_metric_scores['accuracy'],
                         train_score=train_score, train_acc=train_metric_scores['accuracy'])
-            # if epoch % log_per_epoch == 0:
-            #     print(f'[DEBUG] VAL {epoch=} loss={loss.item()}, metrics={val_metric_scores}')
-            #print(np.asarray(np.unique(preds[dev_mask].detach().cpu().numpy(), return_counts=True)).T)
+            #print(f'[DEBUG] VAL {epoch=} loss={loss.item()}, metrics={val_metric_scores}')
         if early_stop.early_stop is True:
             print(f'[INFO] early stop at Epoch={epoch}')
             break
@@ -270,13 +323,10 @@ def do_test(config: dict,
     # ===========
     # generate graphs
     tab_feats, text_feats, image_feats = multimodal_feats
-    expect_sparsity = config['sim_graph_sparsity']
-    tab_graph_Adj = construct_sim_based_graph(tab_feats, expect_sparsity)
-    print(f'[INFO] sparsity of simlarity based graph from tabular features = {cal_sparsity(tab_graph_Adj)}')
-    text_graph_Adj = construct_sim_based_graph(text_feats, expect_sparsity)
-    print(f'[INFO] sparsity of simlarity based graph from text and categorical features = {cal_sparsity(text_graph_Adj)}')
-    image_graph_Adj = construct_sim_based_graph(image_feats, expect_sparsity)
-    print(f'[INFO] sparsity of simlarity based graph from image features = {cal_sparsity(image_graph_Adj)}')
+    print('Construct Test Graphs...')
+    tab_graph_Adj = construct_graph_from_features(tab_feats, **config['g_const'])
+    text_graph_Adj = construct_graph_from_features(text_feats, **config['g_const'])
+    image_graph_Adj = construct_graph_from_features(image_feats, **config['g_const'])
     # ===========
     # create model
     device = th.device("cuda" if th.cuda.is_available() else "cpu")
@@ -289,11 +339,11 @@ def do_test(config: dict,
     multiplex_gnn.to(device)
     # ===========
     # prepare data
-    tab_g = dgl.add_self_loop(dgl.from_scipy(coo_matrix(tab_graph_Adj)))
+    tab_g = dgl.add_self_loop(dgl.from_scipy(tab_graph_Adj))
     tab_g = tab_g.to(device)
-    txt_g = dgl.add_self_loop(dgl.from_scipy(coo_matrix(text_graph_Adj)))
+    txt_g = dgl.add_self_loop(dgl.from_scipy(text_graph_Adj))
     txt_g = txt_g.to(device)
-    img_g = dgl.add_self_loop(dgl.from_scipy(coo_matrix(image_graph_Adj)))
+    img_g = dgl.add_self_loop(dgl.from_scipy(image_graph_Adj))
     img_g = img_g.to(device)
     _, _, test_mask = masks_tuple
     test_labels = th.tensor(all_labels[test_mask]).to(device)
@@ -303,7 +353,8 @@ def do_test(config: dict,
     # do test
     with th.no_grad():
         multiplex_gnn.eval()
-        logits = multiplex_gnn(data_batch, tab_g, txt_g, img_g, test_mask)
+        logits = multiplex_gnn(data_batch, tab_g, txt_g, img_g)
+        logits = logits[test_mask]
         pred_probas = F.softmax(logits, dim=1)
         test_metric_scores = get_multiclass_metrics(test_labels.cpu().numpy(), pred_probas.detach().cpu().numpy(),
                                                     label_space)
@@ -325,10 +376,12 @@ def main(args: argparse.Namespace):
 
     # ===========
     # Text and Image Emb from CLIP
+    # pre-process is based on train_df only
     text_feats, image_feats, ti_labels, ti_masks_tuple = generate_text_image_feature_by_pretrained_CLIP(train_df, dev_df, test_df, col_label)
     print(f'[info] text feats shape={text_feats.shape}, image feats shape={image_feats.shape}')
     # ===========
     # Tab feature from ag Tabular AutoMLPipelineFeatureGenerator
+    # pre-process is based on train_df only
     tab_feats, all_labels, masks_tuple, \
        (num_categs_per_feature, feature_arraycol_map, feature_type_map, num_classes) \
             = generate_tab_feature_by_tabular_pipeline(train_df, dev_df, test_df, col_label)
@@ -361,7 +414,17 @@ def main(args: argparse.Namespace):
     # ===========
     # Train model using HPO
     search_space = {
-            "sim_graph_sparsity": tune.grid_search([0.5, 0.75, 0.9]),
+            'g_const': tune.grid_search([
+                {'method': 'cosine_sim', 'expect_sparsity': 0.5},
+                {'method': 'knn_graph', 'n_neighbors': 5},
+                {'method': 'rbf_kernel', 'expect_sparsity': 0.5},
+                {'method': 'cosine_sim', 'expect_sparsity': 0.75},
+                {'method': 'cosine_sim', 'expect_sparsity': 0.95},
+                {'method': 'knn_graph', 'n_neighbors': 10},
+                {'method': 'knn_graph', 'n_neighbors': 32},
+                {'method': 'rbf_kernel', 'expect_sparsity': 0.75},
+                {'method': 'rbf_kernel', 'expect_sparsity': 0.95},
+                ]),
             "optimizer": tune.grid_search(['adamw']),
             }
     ray_dir = os.path.join(args.exp_save_dir, 'ray_results')
@@ -409,7 +472,7 @@ def main(args: argparse.Namespace):
                                  )
     te = time.time()
     predict_duration = round(te-ts, 1)
-    print(f'[DEBUG] {test_metric_scores=}')
+    print(f'[INFO] {test_metric_scores=}')
     te_duration = time.time()
     duration = round(te_duration-ts_duration, 1)
     params_to_save = args.__dict__

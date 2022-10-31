@@ -227,7 +227,7 @@ class MLP(nn.Module):
 
 
 class MultiplexGNN(nn.Module):
-    max_batch_size = 1280
+    max_batch_size = 1028
 
     def __init__(self,
                  num_categs_per_feature: List[int],
@@ -269,7 +269,6 @@ class MultiplexGNN(nn.Module):
                 tab_g: dgl.DGLGraph,
                 txt_g: dgl.DGLGraph,
                 img_g: dgl.DGLGraph,
-                mask: th.BoolTensor,
                 ) -> th.Tensor:
         # data_batch contains key
         # vector: numerical feats
@@ -292,7 +291,6 @@ class MultiplexGNN(nn.Module):
         attns = self.cal_attn(fused_pooled_embs)   # (n_modality, 1)
         attns = attns.squeeze(1)   # (n_modality, )
         fused_embs = th.stack([tab_embs, txt_embs, img_embs], dim=-1)  # (N_nodes, H, n_modality)
-        fused_embs = fused_embs[mask]
         if fused_embs.shape[0] <= MultiplexGNN.max_batch_size:
             fused_embs = th.matmul(fused_embs, attns)   # (N_nodes, H)
         else:
