@@ -6,11 +6,29 @@ import random
 from datetime import datetime 
 
 import pandas as pd
-from autogluon.tabular import TabularDataset, FeatureMetadata
 from autogluon.multimodal import MultiModalPredictor, __version__
+from sklearn.metrics import log_loss
 
 from ..utils import get_exp_constraint, prepare_ag_dataset
 from ..autogluon.exec import get_metric_names
+
+
+def get_fit_hyperparameters(model_names: str) -> dict:
+    if model_names == 'fusion':
+        hyperparameters = {
+                "model.names": ["hf_text", "timm_image", "clip", "categorical_mlp", "numerical_mlp", "fusion_mlp"],
+                "optimization.max_epochs": 1000,
+                }
+    elif model_names == 'clip':
+        hyperparameters = {
+                "model.names": ["clip"],
+                "data.categorical.convert_to_text": True,
+                "data.numerical.convert_to_text": True,
+                "optimization.max_epochs": 1000,
+                }
+    else:
+        raise ValueError(f'Not support model_names={model_names}')
+    return hyperparameters
 
 
 def main(args: argparse.Namespace):
@@ -30,28 +48,37 @@ def main(args: argparse.Namespace):
     if args.do_load_ckpt:
         predictor = MultiModalPredictor.load(model_save_dir)
     else:
-        predictor = MultiModalPredictor(label=col_label, path=model_save_dir, eval_metric=eval_metric)
+        hyperparameters = get_fit_hyperparameters(args.fit_setting)
+        predictor = MultiModalPredictor(label=col_label, 
+                                        path=model_save_dir, 
+                                        eval_metric=eval_metric,
+                                        )
         # do train
         ts = time.time()
-        predictor.fit(train_data=train_data, tuning_data=dev_data, 
-                time_limit=args.fit_time_limit,
-                seed=args.seed,
-                )
+        predictor.fit(train_data=train_data, 
+                      tuning_data=dev_data, 
+                      time_limit=args.fit_time_limit,
+                      hyperparameters=hyperparameters,
+                      seed=args.seed,
+                      )
         te = time.time()
         training_duration = te - ts
     # do test
     metric_names = get_metric_names(predictor.problem_type)
     ts = time.time()
-    test_metric_res = predictor.evaluate(test_data.drop(columns=col_label), metrics=metric_names)
+    test_metric_res = predictor.evaluate(test_data, metrics=metric_names)
     te = time.time()
     predict_duration = te - ts
-    test_metric_res['log_loss'] = - test_metric_res['log_loss']   # ag use flipped log_loss, we should align with sklearn; log_loss the less the better
+    if 'log_loss' in test_metric_res:
+        # mm_predictor log_loss has some issue
+        y_pred_proba = predictor.predict_proba(test_data)
+        test_metric_res['log_loss'] = log_loss(test_data[col_label], y_pred_proba)
     print(f'Test metrics={test_metric_res}')
     te_duration = time.time()
     if not args.do_load_ckpt:
         result = dict(
                 task=info_dict['task'],
-                framework=f'AutoMM',
+                framework=f'AutoMM-{args.fit_setting}',
                 constraint=get_exp_constraint(args.fit_time_limit),
                 type=predictor.problem_type,
                 params=args.__dict__,
@@ -79,6 +106,7 @@ if __name__ == '__main__':
     parser.add_argument('--fit_time_limit', type=int, default=3600,
             help="TabularPredictor.fit(). how long fit() should run for (wallclock time in seconds).")
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--fit_setting', type=str, default='fusion')
 
     args = parser.parse_args()
     print(f'[INFO] Exp arguments: {args}')

@@ -227,6 +227,8 @@ class MLP(nn.Module):
 
 
 class MultiplexGNN(nn.Module):
+    max_batch_size = 1280
+
     def __init__(self,
                  num_categs_per_feature: List[int],
                  numerical_dims: int,
@@ -288,8 +290,18 @@ class MultiplexGNN(nn.Module):
             th.mean(img_embs, dim=0, keepdim=True),
             ], dim=0)   # (n_modality, H)
         attns = self.cal_attn(fused_pooled_embs)   # (n_modality, 1)
+        attns = attns.squeeze(1)   # (n_modality, )
         fused_embs = th.stack([tab_embs, txt_embs, img_embs], dim=-1)  # (N_nodes, H, n_modality)
         fused_embs = fused_embs[mask]
-        fused_embs = th.matmul(fused_embs, attns.squeeze(1))   # (N_nodes, H)
+        if fused_embs.shape[0] <= MultiplexGNN.max_batch_size:
+            fused_embs = th.matmul(fused_embs, attns)   # (N_nodes, H)
+        else:
+            # chunk into small batches
+            chunks = []
+            n_chunk = fused_embs.shape[0] // MultiplexGNN.max_batch_size + 1
+            for chunk in fused_embs.chunk(n_chunk, dim=0):
+                chunk = th.matmul(chunk, attns)  # (N_chunk, H)
+                chunks.append(chunk)
+            fused_embs = th.cat(chunks, dim=0)   # (N_nodes, H)
         logits = self.fusion_mlp(fused_embs)  # (N_nodes, n_classes)
         return logits
