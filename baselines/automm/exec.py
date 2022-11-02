@@ -98,15 +98,22 @@ def main(args: argparse.Namespace):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="AutoGluon Multimodal predictor arguments to set")
     # required arguments
-    parser.add_argument('--dataset_dir', type=str, required=True)
-    parser.add_argument('--exp_save_dir', type=str, required=True)
+    parser.add_argument('--dataset_dir', type=str, required=True,
+                        help='Which dataset to use. Expect a directory contains csvs and images.')
+    parser.add_argument('--exp_save_dir', type=str, required=True,
+                        help='the directory to save model checkpoints and exp result csv')
     # optional arguments
-    parser.add_argument('--do_load_ckpt', action='store_true')
     # please refer to https://auto.gluon.ai/dev/tutorials/multimodal/beginner_multimodal.html
+    parser.add_argument('--fit_setting', type=str, default='fusion',
+                        choices=['fusion', 'clip'],
+                        help="Use which models. `fusion` represents multimodal fusion method AutoMM; `clip` represent txt-img model CLIP. default=fusion.", 
+                        )
     parser.add_argument('--fit_time_limit', type=int, default=3600,
-            help="TabularPredictor.fit(). how long fit() should run for (wallclock time in seconds).")
-    parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--fit_setting', type=str, default='fusion')
+            help="How long training should run for (wallclock time in seconds). default=3600 (1 hour)")
+    parser.add_argument('--seed', type=int, default=0,
+                        help="global random seed. default=0")
+    parser.add_argument('--do_load_ckpt', action='store_true',
+                        help='a flag. If set, model will be loaded from `exp_save_dir`, and training process will be skipped. default=False.')
 
     args = parser.parse_args()
     print(f'[INFO] Exp arguments: {args}')

@@ -100,18 +100,22 @@ def main(args: argparse.Namespace):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="AutoGluon arguments to set")
     # required arguments
-    parser.add_argument('--dataset_dir', type=str, required=True)
-    parser.add_argument('--exp_save_dir', type=str, required=True)
+    parser.add_argument('--dataset_dir', type=str, required=True,
+                        help='Which dataset to use. Expect a directory contains csvs and images.')
+    parser.add_argument('--exp_save_dir', type=str, required=True,
+                        help='the directory to save model checkpoints and exp result csv')
     # optional arguments
-    parser.add_argument('--do_load_ckpt', action='store_true')
     # Please refer to https://auto.gluon.ai/stable/api/autogluon.predictor.html#autogluon.tabular.TabularPredictor.fit
     parser.add_argument('--fit_hyperparameters', default='default', 
             help="TabularPredictor.fit(). Choices include 'default', 'multimodal'")
     parser.add_argument('--fit_time_limit', type=int, default=3600,
-            help="TabularPredictor.fit(). how long fit() should run for (wallclock time in seconds).")
+            help="TabularPredictor.fit(). how long fit() should run for (wallclock time in seconds). default=3600 (1 hour)")
     parser.add_argument('--fit_presets', type=str, default='best_quality',
             help="TabularPredictor.fit(). Available Presets: [‘best_quality’, ‘high_quality’, ‘good_quality’, ‘medium_quality’, ‘optimize_for_deployment’, ‘interpretable’, ‘ignore_text’]")
-    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--seed', type=int, default=0,
+                        help="global random seed. default=0")
+    parser.add_argument('--do_load_ckpt', action='store_true',
+                        help='a flag. If set, model will be loaded from `exp_save_dir`, and training process will be skipped. default=False.')
 
     args = parser.parse_args()
     print(f'[INFO] Exp arguments: {args}')
