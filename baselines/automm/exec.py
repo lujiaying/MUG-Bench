@@ -26,6 +26,25 @@ def get_fit_hyperparameters(model_names: str) -> dict:
                 "data.numerical.convert_to_text": True,
                 "optimization.max_epochs": 1000,
                 }
+    elif model_names == 'swin':
+        hyperparameters = {
+                "model.names": ["timm_image"],
+                "optimization.max_epochs": 1000,
+                }
+    elif model_names == 'electra':
+        hyperparameters = {
+                "model.names": ["hf_text"],
+                "data.categorical.convert_to_text": False,
+                "data.numerical.convert_to_text": False,
+                "optimization.max_epochs": 1000,
+                }
+    elif model_names == 'AllText-Tx':
+        hyperparameters = {
+                "model.names": ["hf_text"],
+                "data.categorical.convert_to_text": True,
+                "data.numerical.convert_to_text": True,
+                "optimization.max_epochs": 1000,
+                }
     else:
         raise ValueError(f'Not support model_names={model_names}')
     return hyperparameters
@@ -105,7 +124,7 @@ if __name__ == '__main__':
     # optional arguments
     # please refer to https://auto.gluon.ai/dev/tutorials/multimodal/beginner_multimodal.html
     parser.add_argument('--fit_setting', type=str, default='fusion',
-                        choices=['fusion', 'clip'],
+                        choices=['fusion', 'clip', 'swin', 'electra', 'AllText-Tx'],
                         help="Use which models. `fusion` represents multimodal fusion method AutoMM; `clip` represent txt-img model CLIP. default=fusion.", 
                         )
     parser.add_argument('--fit_time_limit', type=int, default=3600,
