@@ -27,22 +27,37 @@ def get_fit_hyperparameters(model_names: str) -> dict:
                 "optimization.max_epochs": 1000,
                 }
     elif model_names == 'swin':
+        # "swin_base_patch4_window7_224"
         hyperparameters = {
                 "model.names": ["timm_image"],
+                "optimization.max_epochs": 1000,
+                }
+    elif model_names == 'resnet':
+        hyperparameters = {
+                "model.names": ["timm_image"],
+                "model.timm_image.checkpoint_name": "resnet50",
                 "optimization.max_epochs": 1000,
                 }
     elif model_names == 'electra':
         hyperparameters = {
                 "model.names": ["hf_text"],
-                "data.categorical.convert_to_text": False,
-                "data.numerical.convert_to_text": False,
-                "optimization.max_epochs": 1000,
-                }
-    elif model_names == 'AllText-Tx':
-        hyperparameters = {
-                "model.names": ["hf_text"],
                 "data.categorical.convert_to_text": True,
                 "data.numerical.convert_to_text": True,
+                "optimization.max_epochs": 1000,
+                }
+    elif model_names == 'roberta':
+        hyperparameters = {
+                "model.names": ["hf_text"],
+                "model.hf_text.checkpoint_name": "roberta-base",
+                "data.categorical.convert_to_text": True,
+                "data.numerical.convert_to_text": True,
+                "optimization.max_epochs": 1000,
+                }
+    elif model_names == 'tab-img-fusion':
+        hyperparameters = {
+                "model.names": ["timm_image", "categorical_mlp", "numerical_mlp", "fusion_mlp"],
+                "data.categorical.convert_to_text": False,
+                "data.numerical.convert_to_text": False,
                 "optimization.max_epochs": 1000,
                 }
     else:
@@ -124,7 +139,7 @@ if __name__ == '__main__':
     # optional arguments
     # please refer to https://auto.gluon.ai/dev/tutorials/multimodal/beginner_multimodal.html
     parser.add_argument('--fit_setting', type=str, default='fusion',
-                        choices=['fusion', 'clip', 'swin', 'electra', 'AllText-Tx'],
+                        choices=['fusion', 'clip', 'swin', 'electra', 'tab-img-fusion', 'resnet', 'roberta'],
                         help="Use which models. `fusion` represents multimodal fusion method AutoMM; `clip` represent txt-img model CLIP. default=fusion.", 
                         )
     parser.add_argument('--fit_time_limit', type=int, default=3600,

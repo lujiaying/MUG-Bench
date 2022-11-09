@@ -4,10 +4,11 @@ import argparse
 import time
 import random
 from datetime import datetime 
-from typing import List
+from typing import List, Tuple
 
 import pandas as pd
 from autogluon.tabular import TabularPredictor, TabularDataset, __version__, FeatureMetadata
+from autogluon.features.generators import AutoMLPipelineFeatureGenerator
 from autogluon.tabular.configs.hyperparameter_configs import get_hyperparameter_config
 
 from ..utils import get_exp_constraint, prepare_ag_dataset
@@ -23,6 +24,23 @@ def get_metric_names(problem_type: str) -> List[str]:
         return ['accuracy', 'balanced_accuracy', 'mcc', 'log_loss']
     else:
         raise ValueError(f'problem_type={problem_type} get_metric_names() NOT implemented yet')
+
+
+def my_get_hyperparameter_config(fit_hyperparameters: str) -> dict:
+    if fit_hyperparameters == 'default':
+        hyperparameters = get_hyperparameter_config(fit_hyperparameters)
+        return hyperparameters
+    elif fit_hyperparameters == 'multimodal':
+        hyperparameters = get_hyperparameter_config(fit_hyperparameters)
+        return hyperparameters
+    elif fit_hyperparameters == 'GBMLarge':
+        hyperparameters = {'GBM': ['GBMLarge']}
+        return hyperparameters
+    elif fit_hyperparameters == 'tabMLP':
+        hyperparameters = {'NN_TORCH': {}}
+        return hyperparameters
+    else:
+        raise ValueError(f'fit_hyperparameters-name={fit_hyperparameters} my_get_hyperparameter_config() NOT implemented yet')
 
 
 def main(args: argparse.Namespace):
@@ -47,13 +65,14 @@ def main(args: argparse.Namespace):
         predictor = TabularPredictor(label=col_label, path=model_save_dir, eval_metric=eval_metric)
         # do train
         ts = time.time()
-        hyperparameters = get_hyperparameter_config(args.fit_hyperparameters)
+        hyperparameters = my_get_hyperparameter_config(args.fit_hyperparameters)
         if args.fit_presets in ['high_quality', 'best_quality']:
             # high or best NOT support tuning_data
             train_data = pd.concat([train_data, dev_data])
             dev_data = None
         predictor.fit(train_data=train_data, tuning_data=dev_data, 
-                hyperparameters=hyperparameters, presets=args.fit_presets,
+                hyperparameters=hyperparameters, 
+                presets=args.fit_presets,
                 time_limit=args.fit_time_limit,
                 feature_metadata=feature_metadata,
                 ag_args_ensemble=dict(fold_fitting_strategy='sequential_local'),
@@ -107,7 +126,8 @@ if __name__ == '__main__':
     # optional arguments
     # Please refer to https://auto.gluon.ai/stable/api/autogluon.predictor.html#autogluon.tabular.TabularPredictor.fit
     parser.add_argument('--fit_hyperparameters', default='default', 
-            help="TabularPredictor.fit(). Choices include 'default', 'multimodal'")
+            choices=['default', 'multimodal', 'GBMLarge', 'tabMLP'],
+            help="TabularPredictor.fit(). Choices include 'default', 'multimodal', 'GBMLarge', 'tabMLP'")
     parser.add_argument('--fit_time_limit', type=int, default=3600,
             help="TabularPredictor.fit(). how long fit() should run for (wallclock time in seconds). default=3600 (1 hour)")
     parser.add_argument('--fit_presets', type=str, default='best_quality',
