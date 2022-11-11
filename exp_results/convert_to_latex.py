@@ -34,3 +34,8 @@ if __name__ == '__main__':
     print('training duration for boxplot')
     stats = boxplot_stats(df.training_duration)[0]
     print(f'lower whisker={stats["whislo"]}, lower quartile={stats["q1"]},\nmedian={stats["med"]}, upper quartile={stats["q3"]},\nupper whisker={stats["whishi"]}')
+
+    print('testing duration and accuracy tradeoffs')
+    mean_acc = df['accuracy'].mean()
+    mean_test_duration = df['predict_duration'].mean()
+    print(round(mean_test_duration, 2), '\t', round(mean_acc, 3), )
