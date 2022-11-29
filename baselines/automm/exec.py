@@ -4,7 +4,9 @@ import argparse
 import time
 import random
 from datetime import datetime 
+from typing import Tuple
 
+from ray import tune
 import pandas as pd
 from autogluon.multimodal import MultiModalPredictor, __version__
 from sklearn.metrics import log_loss
@@ -13,11 +15,14 @@ from ..utils import get_exp_constraint, prepare_ag_dataset
 from ..autogluon.exec import get_metric_names
 
 
-def get_fit_hyperparameters(model_names: str) -> dict:
+def get_fit_hyperparameters(model_names: str) -> Tuple[dict, dict]:
     if model_names == 'fusion':
+        # the default one shown in table
         hyperparameters = {
                 "model.names": ["hf_text", "timm_image", "clip", "categorical_mlp", "numerical_mlp", "fusion_mlp"],
                 "optimization.max_epochs": 1000,
+                "model.hf_text.checkpoint_name": "roberta-base",
+                "model.timm_image.checkpoint_name": "vit_base_patch32_224",
                 }
     elif model_names == 'clip':
         hyperparameters = {
@@ -38,13 +43,8 @@ def get_fit_hyperparameters(model_names: str) -> dict:
                 "model.timm_image.checkpoint_name": "vit_base_patch32_224",
                 "optimization.max_epochs": 1000,
                 }
-    elif model_names == 'resnet':
-        hyperparameters = {
-                "model.names": ["timm_image"],
-                "model.timm_image.checkpoint_name": "resnet50",
-                "optimization.max_epochs": 1000,
-                }
     elif model_names == 'electra':
+        # "google/electra-base-discriminator"
         hyperparameters = {
                 "model.names": ["hf_text"],
                 "data.categorical.convert_to_text": True,

@@ -5,7 +5,7 @@ from matplotlib.cbook import boxplot_stats
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser("convert exp results files into latex used format")
     parser.add_argument('--in_file', type=str, required=True)
 
     args = parser.parse_args()
