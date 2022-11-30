@@ -339,12 +339,9 @@ def do_test(config: dict,
     multiplex_gnn.to(device)
     # ===========
     # prepare data
-    tab_g = dgl.add_self_loop(dgl.from_scipy(tab_graph_Adj))
-    tab_g = tab_g.to(device)
-    txt_g = dgl.add_self_loop(dgl.from_scipy(text_graph_Adj))
-    txt_g = txt_g.to(device)
-    img_g = dgl.add_self_loop(dgl.from_scipy(image_graph_Adj))
-    img_g = img_g.to(device)
+    tab_g = dgl.add_self_loop(dgl.from_scipy(tab_graph_Adj)).to(device)
+    txt_g = dgl.add_self_loop(dgl.from_scipy(text_graph_Adj)).to(device)
+    img_g = dgl.add_self_loop(dgl.from_scipy(image_graph_Adj)).to(device)
     _, _, test_mask = masks_tuple
     test_labels = th.tensor(all_labels[test_mask]).to(device)
     test_mask = th.tensor(test_mask, dtype=th.bool).to(device)
@@ -359,21 +356,14 @@ def do_test(config: dict,
         test_metric_scores = get_multiclass_metrics(test_labels.cpu().numpy(), pred_probas.detach().cpu().numpy(),
                                                     label_space)
     return test_metric_scores
-    
 
-def main(args: argparse.Namespace):
-    if not os.path.exists(args.exp_save_dir):
-        os.makedirs(args.exp_save_dir)
-    ts_duration = time.time()
-    random.seed(args.seed)
-    # load task configure
-    with open(os.path.join(args.dataset_dir, 'info.json')) as fopen:
-        info_dict = json.load(fopen)
-    col_label = info_dict['label']
-    eval_metric = info_dict['eval_metric']
-    # load train, dev, test
-    train_df, dev_df, test_df, feature_metadata = prepare_ag_dataset(args.dataset_dir)
 
+def prepare_graph_ingredients(
+        train_df: TabularDataset, 
+        dev_df: TabularDataset, 
+        test_df: TabularDataset,
+        col_label: str,
+        ):
     # ===========
     # Text and Image Emb from CLIP
     # pre-process is based on train_df only
@@ -395,7 +385,7 @@ def main(args: argparse.Namespace):
     print(f'[info] tabular feats shape={tab_feats.shape}, label shape={all_labels.shape}')
     assert ti_labels.tolist() == all_labels.tolist()
     # ===========
-    # prepare data
+    # prepare model input
     device = th.device("cuda" if th.cuda.is_available() else "cpu")
     data_batch = {}
     if vector_dims > 0:
@@ -410,6 +400,28 @@ def main(args: argparse.Namespace):
         data_batch['embed'] = all_embed_feats
     data_batch['text'] = th.tensor(text_feats).to(device)
     data_batch['image'] = th.tensor(image_feats).to(device)
+    return (tab_feats, text_feats, image_feats, 
+            all_labels, masks_tuple, tab_feat_params,
+            num_classes, data_batch) 
+
+
+def main(args: argparse.Namespace):
+    if not os.path.exists(args.exp_save_dir):
+        os.makedirs(args.exp_save_dir)
+    ts_duration = time.time()
+    random.seed(args.seed)
+    # load task configure
+    with open(os.path.join(args.dataset_dir, 'info.json')) as fopen:
+        info_dict = json.load(fopen)
+    col_label = info_dict['label']
+    eval_metric = info_dict['eval_metric']
+    # load train, dev, test
+    train_df, dev_df, test_df, feature_metadata = prepare_ag_dataset(args.dataset_dir)
+    
+    tab_feats, text_feats, image_feats,\
+            all_labels, masks_tuple, tab_feat_params,\
+            num_classes, data_batch\
+            = prepare_graph_ingredients(train_df, dev_df, test_df, col_label)
 
     # ===========
     # Train model using HPO

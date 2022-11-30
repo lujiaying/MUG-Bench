@@ -10,10 +10,15 @@ from sklearn.decomposition import PCA, TruncatedSVD
 from sklearn.feature_extraction.text import CountVectorizer
 from autogluon.tabular import TabularDataset
 from autogluon.multimodal.data.infer_types import infer_column_types
+from autogluon.multimodal import MultiModalPredictor
 from PIL import Image
+from ray import tune
+import torch as th
+import dgl
 
 from .utils import prepare_ag_dataset
-from .autoMGNN.exec import generate_tab_feature_by_tabular_pipeline, pack_cate_text_cols_to_one_sent
+from .autoMGNN.exec import generate_tab_feature_by_tabular_pipeline, pack_cate_text_cols_to_one_sent, prepare_graph_ingredients, CKPT_FNAME, construct_graph_from_features
+from .autoMGNN.models import MultiplexGNN
 
 
 def get_tabular_embs(
@@ -63,7 +68,19 @@ def get_text_embs(
         test_embs = svd.fit_transform(test_bag_of_words)
     else:
         test_embs = test_bag_of_words
-    print(f'{test_embs.shape=}')
+    print(f'text {test_embs.shape=}')
+    test_labels = test_data[col_label].tolist()
+    return test_embs, test_labels
+
+
+def get_text_embs_from_model(
+        image_model_ckpt_dir: str,
+        test_data: TabularDataset,
+        col_label: str,
+        ) -> Tuple[np.ndarray, list]:
+    predictor = MultiModalPredictor.load(image_model_ckpt_dir)
+    test_embs = predictor.extract_embedding(test_data)
+    print(f'text model {test_embs.shape=}')
     test_labels = test_data[col_label].tolist()
     return test_embs, test_labels
 
@@ -76,7 +93,7 @@ def get_image_embs(
         ) -> Tuple[np.ndarray, list]:
     """
     Get raw image features
-    Then PCA into 25 * 3 dims
+    Then PCA into K * 3 dims
     """
     test_images = []
     for image_path in test_data['Image Path'].tolist():
@@ -85,7 +102,7 @@ def get_image_embs(
             test_images.append(test_image)
     test_images = np.stack(test_images, axis=0)  # (N, width, height, 3)
     N = test_images.shape[0]
-    pca_n_components = 25
+    pca_n_components = 30
     test_embs_all_channels = []
     for c in range(3):
         test_images_c = test_images[:, :, :, c].reshape(N, -1)
@@ -94,8 +111,72 @@ def get_image_embs(
         test_embs_c = pca.fit_transform(test_images_c)  # (N, n_components)
         test_embs_all_channels.append(test_embs_c)
     test_embs = np.stack(test_embs_all_channels, axis=2).reshape(N, -1)
-    print(f'final {test_embs.shape=}')
+    print(f'final image {test_embs.shape=}')
     test_labels = test_data[col_label].tolist()
+    return test_embs, test_labels
+
+
+def get_image_embs_from_model(
+        image_model_ckpt_dir: str,
+        test_data: TabularDataset,
+        col_label: str,
+        ) -> Tuple[np.ndarray, list]:
+    predictor = MultiModalPredictor.load(image_model_ckpt_dir)
+    #image_paths = test_data['Image Path'].tolist()
+    test_embs = predictor.extract_embedding(test_data)
+    print(f'{test_embs.shape=}')
+    test_labels = test_data[col_label].tolist()
+    return test_embs, test_labels
+
+
+def get_fusion_embs_from_gnn_model(
+        model_ckpt_dir: str,
+        train_df: TabularDataset, 
+        dev_df: TabularDataset, 
+        test_df: TabularDataset,
+        col_label: str,
+        ) -> Tuple[np.ndarray, list]:
+    analysis = tune.ExperimentAnalysis(model_ckpt_dir)
+    best_trial_config = analysis.get_best_config(metric='val_score', mode='max', scope='all')
+    print(f'[INFO] best_trial_config={best_trial_config}')
+    logdir = analysis.get_best_logdir(metric='val_score', mode="max", scope='all')
+    print(f'[INFO] best logdir={logdir}')
+    # prepare data meets required format
+    tab_feats, text_feats, image_feats,\
+            all_labels, masks_tuple, tab_feat_params,\
+            num_classes, data_batch\
+            = prepare_graph_ingredients(train_df, dev_df, test_df, col_label)
+    # prepare gnn model
+    device = th.device("cuda" if th.cuda.is_available() else "cpu")
+    num_categs_per_feature = tab_feat_params['num_categs_per_feature']
+    vector_dims = tab_feat_params['vector_dims']
+    multiplex_gnn = MultiplexGNN(num_categs_per_feature, vector_dims, text_feats.shape[1], image_feats.shape[1], num_classes)
+    ckpt_path = os.path.join(logdir, CKPT_FNAME)
+    state_dict = th.load(ckpt_path)
+    print(f'[INFO] load_state_dict from {ckpt_path}')
+    multiplex_gnn.load_state_dict(state_dict)
+    print(multiplex_gnn)
+    multiplex_gnn.to(device)
+    # generate graphs
+    print('Construct Test Graphs...')
+    tab_graph_Adj = construct_graph_from_features(tab_feats, **best_trial_config['g_const'])
+    text_graph_Adj = construct_graph_from_features(text_feats, **best_trial_config['g_const'])
+    image_graph_Adj = construct_graph_from_features(image_feats, **best_trial_config['g_const'])
+    tab_g = dgl.add_self_loop(dgl.from_scipy(tab_graph_Adj)).to(device)
+    txt_g = dgl.add_self_loop(dgl.from_scipy(text_graph_Adj)).to(device)
+    img_g = dgl.add_self_loop(dgl.from_scipy(image_graph_Adj)).to(device)
+    _, _, test_mask = masks_tuple
+    test_labels = th.tensor(all_labels[test_mask]).to(device)
+    test_mask = th.tensor(test_mask, dtype=th.bool).to(device)
+    # ===========
+    # get embeddings
+    multiplex_gnn.eval()
+    with th.no_grad():
+        embeddings = multiplex_gnn.extract_fused_embedding(data_batch, tab_g, txt_g, img_g)
+        embeddings = embeddings[test_mask]
+    test_embs = embeddings.detach().cpu().numpy()
+    print(f'fused embedding {test_embs.shape=}')
+    test_labels = test_df[col_label].tolist()
     return test_embs, test_labels
 
 
@@ -124,22 +205,42 @@ def main(args: argparse.Namespace):
     train_df, dev_df, test_df, feature_metadata = prepare_ag_dataset(args.dataset_dir)
 
     """
-    # tabular embs
+    # tabular raw embs
     test_feats, test_labels = get_tabular_embs(train_df, dev_df, test_df, col_label)
     tab_feat_out_path = os.path.join(args.out_save_dir, 'tab_feats.tsv')
     save_to_tsv(test_labels, test_feats, tab_feat_out_path)
     """
 
     """
-    # text embs
+    # text raw embs
     text_feats, test_labels = get_text_embs(train_df, dev_df, test_df, col_label)
     text_feat_out_path = os.path.join(args.out_save_dir, 'txt_feats.tsv')
     save_to_tsv(test_labels, text_feats, text_feat_out_path)
     """
+    # image embs from trained model
+    if args.text_model_ckpt_dir:
+        text_feats, test_labels = get_text_embs_from_model(args.text_model_ckpt_dir, test_df, col_label)
+        text_feat_out_path = os.path.join(args.out_save_dir, 'roberta_txt_feats.tsv')
+        save_to_tsv(test_labels, text_feats, text_feat_out_path)
 
+    """
+    # image raw embs
     image_feats, test_labels = get_image_embs(train_df, dev_df, test_df, col_label)
     image_feat_out_path = os.path.join(args.out_save_dir, 'img_feats.tsv')
     save_to_tsv(test_labels, image_feats, image_feat_out_path)
+    """
+
+    # image embs from trained model
+    if args.image_model_ckpt_dir:
+        image_feats, test_labels = get_image_embs_from_model(args.image_model_ckpt_dir, test_df, col_label)
+        image_feat_out_path = os.path.join(args.out_save_dir, 'vit_img_feats.tsv')
+        save_to_tsv(test_labels, image_feats, image_feat_out_path)
+
+    # fusion embs from trained model
+    if args.fusion_model_ckpt_dir:
+        fused_feats, test_labels = get_fusion_embs_from_gnn_model(args.fusion_model_ckpt_dir, train_df, dev_df, test_df, col_label)
+        fused_feat_out_path = os.path.join(args.out_save_dir, 'gnn_fusion_feats.tsv')
+        save_to_tsv(test_labels, fused_feats, fused_feat_out_path)
 
 
 if __name__ == '__main__':
@@ -149,6 +250,9 @@ if __name__ == '__main__':
     parser.add_argument('--out_save_dir', type=str, required=True)
     # optional arguments
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--image_model_ckpt_dir', type=str, default='')
+    parser.add_argument('--text_model_ckpt_dir', type=str, default='')
+    parser.add_argument('--fusion_model_ckpt_dir', type=str, default='')
 
     args = parser.parse_args()
     print(f'[INFO] Exp arguments: {args}')

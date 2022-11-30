@@ -264,17 +264,12 @@ class MultiplexGNN(nn.Module):
         attns = F.softmax(scores, dim=0)  # (*, 1)
         return attns
 
-    def forward(self, 
+    def extract_fused_embedding(self, 
                 data_batch: Dict[str, th.Tensor],
                 tab_g: dgl.DGLGraph,
                 txt_g: dgl.DGLGraph,
                 img_g: dgl.DGLGraph,
                 ) -> th.Tensor:
-        # data_batch contains key
-        # vector: numerical feats
-        # embed: categorical feats
-        # text: text feats
-        # image: image feats
         tab_embs = self.tab_encoder(data_batch)
         tab_embs = self.tab_gnn(tab_embs, tab_g)  # (N_nodes, H)
         txt_embs = self.txt_encoder(data_batch['text'])
@@ -301,5 +296,19 @@ class MultiplexGNN(nn.Module):
                 chunk = th.matmul(chunk, attns)  # (N_chunk, H)
                 chunks.append(chunk)
             fused_embs = th.cat(chunks, dim=0)   # (N_nodes, H)
+        return fused_embs
+
+    def forward(self, 
+                data_batch: Dict[str, th.Tensor],
+                tab_g: dgl.DGLGraph,
+                txt_g: dgl.DGLGraph,
+                img_g: dgl.DGLGraph,
+                ) -> th.Tensor:
+        # data_batch contains key
+        # vector: numerical feats
+        # embed: categorical feats
+        # text: text feats
+        # image: image feats
+        fused_embs = self.extract_fused_embedding(data_batch, tab_g, txt_g, img_g)
         logits = self.fusion_mlp(fused_embs)  # (N_nodes, n_classes)
         return logits
