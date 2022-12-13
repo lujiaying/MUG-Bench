@@ -8,7 +8,7 @@ import numpy as np
 from sklearn import preprocessing
 from sklearn.decomposition import PCA, TruncatedSVD
 from sklearn.feature_extraction.text import CountVectorizer
-from autogluon.tabular import TabularDataset
+from autogluon.tabular import TabularDataset, TabularPredictor
 from autogluon.multimodal.data.infer_types import infer_column_types
 from autogluon.multimodal import MultiModalPredictor
 from PIL import Image
@@ -38,6 +38,46 @@ def get_tabular_embs(
     test_labels = test_data[col_label].tolist()
     assert(len(test_feats) == len(test_labels))
     return test_feats, test_labels
+
+
+def get_tabular_embs_from_model(
+        model_ckpt_dir: str,
+        test_data: TabularDataset,
+        col_label: str,
+        ) -> Tuple[np.ndarray, list]:
+    predictor = TabularPredictor.load(model_ckpt_dir)
+    # prepare data in predictor level
+    labels_p = predictor.transform_labels(test_data[col_label])
+    test_data_p = predictor.transform_features(test_data)
+    # prepare data in model level
+    model_obj = predictor._trainer.load_model('NeuralNetTorch')
+    test_dataset_p = model_obj._process_test_data(df=model_obj.preprocess(test_data_p), labels=labels_p)
+    test_dataloader = test_dataset_p.build_loader(512, 1, is_test=True)  # batch_size, worker
+    model = model_obj.model
+    model.eval()
+    all_tab_feats = []
+    with th.no_grad():
+        for data_batch in test_dataloader:
+            # get emb before Sequential
+            input_data = []
+            if model.has_vector_features:
+                input_data.append(data_batch['vector'].to(model.device))
+            if model.has_embed_features:
+                embed_data = data_batch['embed']
+                for i in range(len(model.embed_blocks)):
+                    input_data.append(model.embed_blocks[i](embed_data[i].to(model.device)))
+            if len(input_data) > 1:
+                input_data = th.cat(input_data, dim=1)
+            else:
+                input_data = input_data[0]
+            # get embs
+            batch_tab_embs = model.main_block[:-1](input_data)
+            all_tab_feats.append(batch_tab_embs.detach().cpu())
+    all_tab_feats = th.cat(all_tab_feats, axis=0).numpy()
+    # get original test labels
+    test_labels = test_data[col_label].tolist()
+    assert(len(all_tab_feats) == len(test_labels))
+    return all_tab_feats, test_labels
 
 
 def get_text_embs(
@@ -74,11 +114,11 @@ def get_text_embs(
 
 
 def get_text_embs_from_model(
-        image_model_ckpt_dir: str,
+        model_ckpt_dir: str,
         test_data: TabularDataset,
         col_label: str,
         ) -> Tuple[np.ndarray, list]:
-    predictor = MultiModalPredictor.load(image_model_ckpt_dir)
+    predictor = MultiModalPredictor.load(model_ckpt_dir)
     test_embs = predictor.extract_embedding(test_data)
     print(f'text model {test_embs.shape=}')
     test_labels = test_data[col_label].tolist()
@@ -211,6 +251,11 @@ def main(args: argparse.Namespace):
     save_to_tsv(test_labels, test_feats, tab_feat_out_path)
     """
 
+    if args.tab_model_ckpt_dir:
+        tab_feats, test_labels = get_tabular_embs_from_model(args.tab_model_ckpt_dir, test_df, col_label)
+        tab_feat_out_path = os.path.join(args.out_save_dir, 'tabMLP_tab_feats.tsv')
+        save_to_tsv(test_labels, tab_feats, tab_feat_out_path)
+
     """
     # text raw embs
     text_feats, test_labels = get_text_embs(train_df, dev_df, test_df, col_label)
@@ -250,6 +295,7 @@ if __name__ == '__main__':
     parser.add_argument('--out_save_dir', type=str, required=True)
     # optional arguments
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--tab_model_ckpt_dir', type=str, default='')
     parser.add_argument('--image_model_ckpt_dir', type=str, default='')
     parser.add_argument('--text_model_ckpt_dir', type=str, default='')
     parser.add_argument('--fusion_model_ckpt_dir', type=str, default='')
