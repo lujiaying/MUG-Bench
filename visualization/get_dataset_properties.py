@@ -1,6 +1,7 @@
 import os
 import json
 import argparse
+from typing import List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -17,6 +18,10 @@ def get_Shannon_equitability(all_labels: pd.Series) -> float:
     print(f'{k=}')
     print(f'Shannon equitability = {E:.4f}')
     return E
+
+
+def analysis_numerical_features(all_data: pd.DataFrame):
+    all_data.describe()
 
 
 if __name__ == '__main__':
@@ -36,4 +41,6 @@ if __name__ == '__main__':
     train_df, dev_df, test_df, feature_metadata = prepare_ag_dataset(args.dataset_dir)
     all_data = pd.concat([train_df, dev_df, test_df])
     all_labels = all_data[col_label]
-    E = get_Shannon_equitability(all_labels)
+    # E = get_Shannon_equitability(all_labels)
+
+    analysis_numerical_features(all_data)
