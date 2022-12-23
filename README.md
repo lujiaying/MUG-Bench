@@ -7,7 +7,7 @@ Benchmarking Multimodal Classification for Tabular, Textual and Visual Game Data
 - [Reproduce Results](#reproduce-results)
 
 ## Datasets
-The eight datasets used in paper can be downloaded from https://figshare.com/s/fca3d668252da22ecdd0.   
+The eight datasets used in paper can be downloaded from https://doi.org/10.6084/m9.figshare.21454413.   
 After downloading and decompressing them under `./datasets/` directory, the directory looks like:
 ```
 📁 ./dataset
