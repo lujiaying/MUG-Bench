@@ -17,6 +17,7 @@ if __name__ == '__main__':
 
     # sns.set_context("paper", rc={"font.size":8, "axes.titlesize":12, "axes.labelsize":10})
     sns.set_context("paper", rc={"font.size":12, "axes.titlesize":16, "axes.labelsize":13})
+    sns.set_theme(style="ticks")
     df = pd.read_csv(args.in_file, sep='\t', header=None)
     # do filter to select only 5 classes
     # df = df.loc[df[0].isin(["MAGE", "HUNTER", "PRIEST", "WARRIOR", "ROGUE"])]
@@ -24,14 +25,14 @@ if __name__ == '__main__':
     labels = df.iloc[:, 0]
     feats = df.iloc[:, 1:]
     print(f'{args.in_file=}, {feats.shape=} {labels.shape=}')
+    # TODO: draw all figures together!!
 
     # === UMAP ===
     if args.algorithm == 'umap':
         reducer = umap.UMAP(n_neighbors=20)
         embedding = reducer.fit_transform(feats)
         df_umap = pd.DataFrame(data={'UMAP1': embedding[:,0], 'UMAP2': embedding[:,1], 'label': labels})
-        # sns_plot = sns.scatterplot(data=df_umap, x='UMAP1', y='UMAP2', hue='label', s=48)
-        sns_plot = sns.scatterplot(data=df_umap, x='UMAP1', y='UMAP2', hue='label', s=36)
+        sns_plot = sns.scatterplot(data=df_umap, x='UMAP1', y='UMAP2', hue='label', s=48, linewidth=0.25, alpha=0.85)
 
     # === tSNE ===
     if args.algorithm == 'tsne':
@@ -40,7 +41,11 @@ if __name__ == '__main__':
         sns_plot = sns.scatterplot(data=df_tsne, x='tSNE1', y='tSNE2', hue='label')
 
     sns_plot.set(title=args.title)
-    # sns_plot.legend([],[], frameon=False)  # remove legend
-    sns.move_legend(sns_plot, "lower center", bbox_to_anchor=(0.5, -0.5), ncol=2, title=None, fontsize=12)
+    sns_plot.legend([],[], frameon=False)  # remove legend
+    sns_plot.set(xlabel=None, ylabel=None)  # remove axis labels
+    sns.despine()
+    #sns_plot.set(xticklabels=[], yticklabels=[])  # remove tick labels
+    #sns_plot.tick_params(bottom=False, left=False)
+    # sns.move_legend(sns_plot, "lower center", bbox_to_anchor=(0.5, -0.5), ncol=2, title=None, fontsize=12)
     sns_plot.figure.set_size_inches(4, 4)
     sns_plot.figure.savefig(args.out_file, bbox_inches='tight')

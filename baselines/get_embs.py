@@ -4,6 +4,7 @@ import os
 import json
 from typing import Tuple
 import numpy as np
+import pandas as pd
 
 from sklearn import preprocessing
 from sklearn.decomposition import PCA, TruncatedSVD
@@ -169,6 +170,29 @@ def get_image_embs_from_model(
     return test_embs, test_labels
 
 
+def get_fused_raw_embs(out_save_dir: str) -> Tuple[np.ndarray, list]:
+    tab_emb_path = os.path.join(out_save_dir, 'tab_feats.tsv')
+    tab_df = pd.read_csv(tab_emb_path, sep='\t', header=None)
+    txt_emb_path = os.path.join(out_save_dir, 'txt_feats.tsv')
+    txt_df = pd.read_csv(txt_emb_path, sep='\t', header=None)
+    img_emb_path = os.path.join(out_save_dir, 'img_feats.tsv')
+    img_df = pd.read_csv(img_emb_path, sep='\t', header=None)
+    # assertion
+    assert len(tab_df) == len(txt_df) == len(img_df)
+    tab_feats = tab_df.iloc[:, 1:].to_numpy()
+    txt_feats = txt_df.iloc[:, 1:].to_numpy()
+    img_feats = img_df.iloc[:, 1:].to_numpy()
+    print(f'{tab_feats.shape=} {txt_feats.shape=} {img_feats.shape=}')
+    fused_feats = np.concatenate((tab_feats, txt_feats, img_feats), axis=1)
+    print(f'{fused_feats.shape=}')
+    # pca = PCA(n_components=80)
+    # fused_embs = pca.fit_transform(fused_feats)
+    fused_embs = fused_feats
+    print(f'{fused_embs.shape=}')
+    test_labels = tab_df.iloc[:, 0].tolist()
+    return fused_embs, test_labels
+
+
 def get_fusion_embs_from_gnn_model(
         model_ckpt_dir: str,
         train_df: TabularDataset, 
@@ -280,6 +304,11 @@ def main(args: argparse.Namespace):
         image_feats, test_labels = get_image_embs_from_model(args.image_model_ckpt_dir, test_df, col_label)
         image_feat_out_path = os.path.join(args.out_save_dir, 'vit_img_feats.tsv')
         save_to_tsv(test_labels, image_feats, image_feat_out_path)
+
+    # fused raw embs
+    fused_feats, test_labels = get_fused_raw_embs(args.out_save_dir)
+    feat_out_path = os.path.join(args.out_save_dir, 'fused_raw_feats.tsv')
+    save_to_tsv(test_labels, fused_feats, feat_out_path)
 
     # fusion embs from trained model
     if args.fusion_model_ckpt_dir:
