@@ -58,6 +58,7 @@ We mainly use it for feature preprocessing and baselines. And it has specific de
 Example scripts to run baselines are listed in [run_baseline.sh](run_baseline.sh).
 
 For instance, if we want to reproduce the txt-image model [CLIP](https://github.com/openai/CLIP),
+For detailed examples to run each model, please check out run_baseline.sh
 
 ```Shell
 # Run txt-image model (CLIP)
