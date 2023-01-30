@@ -1,6 +1,6 @@
-# MUG-Bench
+# MuG
 
-Benchmarking Multimodal Classification for Tabular, Textual and Visual Game Data
+MuG: a Multimodal Classification Benchmark on Game Data with Tabular, Textual, and Visual Fields
 
 **Table of Contents**
 
@@ -55,29 +55,15 @@ We mainly use it for feature preprocessing and baselines. And it has specific de
 
 ## Reproduce Results
 
-Example scripts to run baselines are listed in [run_baseline.sh](run_baseline.sh).
+Example scripts to run unimodal classifiers and multimodal classifiers are listed in [run_baseline.sh](run_baseline.sh).
 
-For instance, if we want to reproduce the txt-image model [CLIP](https://github.com/openai/CLIP),
-For detailed examples to run each model, please check out run_baseline.sh
+For instance, we can use the following script to reproduce the proposed MuGNet model:
 
 ```Shell
-# Run txt-image model (CLIP)
-python -m baselines.automm.exec \
-    --dataset_dir datasets/Pokemon_PrimaryType \
-    --exp_save_dir exps/Pokemon_PrimaryType_CLIP \
-    --fit_time_limit 28800 \
-    --fit_setting clip
+# Run MuGNet modal
+python -m baselines.MuGNet.exec \
+        --dataset_dir datasets/Pokemon_PrimaryType \
+        --exp_save_dir exps/Pokemon_PrimaryType_mugnet \
+        --fit_time_limit 28800 
 ```
-where
-
--m specifies the model used [automm, autogluon, automgnn] 
-
---dataset_dir specifies the dataset destination
-
---exp_save_dir specifies the destination to store the final output
-
---fit_time_limit specifies the time limit for the model to run in seconds, default is 3600 seconds.
-
---fit_setting specifies the model used. For autogluon, fit_setting includes ['default', 'multimodal', 'GBMLarge', 'tabMLP']. For automm, fit_setting includes ['fusion', 'clip', 'swin', 'electra', 'vit', 'resnet', 'roberta'], the default is set to 'fusion'.
-
---fit_preset specifies the quality of the model used. It is only available for AutoGluon models. It includes ['best_quality', 'high_quality', 'good_quality', 'medium_quality', 'optimize_for_deployment', 'interpretable', 'ignore_text']. If not specified, the fault is set to 'best_quality'. For best performances, please use best_quality. 
+where `--dataset_dir` specifies the dataset directory, `--exp_save_dir` specifies the destination to store the final output, `--fit_time_limit` specifies the time limit for the model to run in seconds.

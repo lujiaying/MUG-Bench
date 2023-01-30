@@ -226,7 +226,7 @@ class MLP(nn.Module):
             return x
 
 
-class MultiplexGNN(nn.Module):
+class MuGNet(nn.Module):
     max_batch_size = 1028
 
     def __init__(self,

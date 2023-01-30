@@ -34,7 +34,7 @@ from hyperopt import hp
 
 from ..utils import get_exp_constraint, prepare_ag_dataset, IMG_COL, get_multiclass_metrics, EarlyStopping, get_exp_resource
 from ..autogluon.exec import get_metric_names
-from .models import MultiplexGNN
+from .models import MuGNet
 
 
 __version__ = '0.1'
@@ -229,7 +229,7 @@ def train_mgnn(config: dict,
     device = th.device("cuda" if th.cuda.is_available() else "cpu")
     num_categs_per_feature = tab_feat_params['num_categs_per_feature']
     vector_dims = tab_feat_params['vector_dims']
-    multiplex_gnn = MultiplexGNN(num_categs_per_feature, vector_dims, text_feats.shape[1], image_feats.shape[1], num_classes)
+    multiplex_gnn = MuGNet(num_categs_per_feature, vector_dims, text_feats.shape[1], image_feats.shape[1], num_classes)
     multiplex_gnn.to(device)
     if config['optimizer'] == 'adamw':
         opt = th.optim.AdamW(multiplex_gnn.parameters())  # default lr=1e-3, weight_decay=1e-2
