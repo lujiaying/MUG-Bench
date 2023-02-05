@@ -1,6 +1,6 @@
-# MuG
+# MuG-Bench
 
-MuG: a Multimodal Classification Benchmark on Game Data with Tabular, Textual, and Visual Fields.
+Data and code of the manuscript "MuG: A Multimodal Classification Benchmark on Game Data with Tabular, Textual, and Visual Fields".
 For any suggestion/question, please feel free to create an issue or drop an email @ ([jiaying.lu@emory.edu](mailto:jiaying.lu@emory.edu)).
 
 
