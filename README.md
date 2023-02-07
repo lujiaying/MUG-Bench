@@ -1,6 +1,6 @@
 # MuG-Bench
 
-Data and code of the manuscript "MuG: A Multimodal Classification Benchmark on Game Data with Tabular, Textual, and Visual Fields".
+Data and code of the manuscript "[MuG: A Multimodal Classification Benchmark on Game Data with Tabular, Textual, and Visual Fields](https://arxiv.org/abs/2302.02978)".
 For any suggestion/question, please feel free to create an issue or drop an email @ ([jiaying.lu@emory.edu](mailto:jiaying.lu@emory.edu)).
 
 
@@ -82,4 +82,12 @@ python -m baselines.autogluon.exec \
 
 ## Citing Our Work
 
-TBD.
+```bibtex
+@article {lu2023MuG,
+  title = {MuG: A Multimodal Classification Benchmark on Game Data with Tabular, Textual, and Visual Fields},
+  author = {Jiaying Lu, Yongchen Qian, Shifan Zhao, Yuanzhe Xi, Carl Yang},
+  year = {2023},
+  URL = {https://arxiv.org/abs/2302.02978},
+  journal = {arXiv preprint arXiv:2302.02978}
+}
+```
