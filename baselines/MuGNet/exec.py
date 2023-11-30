@@ -332,7 +332,7 @@ def do_test(config: dict,
     device = th.device("cuda" if th.cuda.is_available() else "cpu")
     num_categs_per_feature = tab_feat_params['num_categs_per_feature']
     vector_dims = tab_feat_params['vector_dims']
-    multiplex_gnn = MultiplexGNN(num_categs_per_feature, vector_dims, text_feats.shape[1], image_feats.shape[1], num_classes)
+    multiplex_gnn = MuGNet(num_categs_per_feature, vector_dims, text_feats.shape[1], image_feats.shape[1], num_classes)
     state_dict = th.load(ckpt_path)
     print(f'[INFO] load_state_dict from {ckpt_path}')
     multiplex_gnn.load_state_dict(state_dict)
@@ -491,7 +491,7 @@ def main(args: argparse.Namespace):
     params_to_save['hpo_best_config'] = best_trial_config
     result = dict(
                 task=info_dict['task'],
-                framework=f'AutoMultiplexGNN',
+                framework=f'MugNet',
                 constraint=get_exp_constraint(args.fit_time_limit),
                 type='multiclass',
                 params=params_to_save,

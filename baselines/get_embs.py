@@ -18,8 +18,8 @@ import torch as th
 import dgl
 
 from .utils import prepare_ag_dataset
-from .autoMGNN.exec import generate_tab_feature_by_tabular_pipeline, pack_cate_text_cols_to_one_sent, prepare_graph_ingredients, CKPT_FNAME, construct_graph_from_features
-from .autoMGNN.models import MultiplexGNN
+from .MuGNet.exec import generate_tab_feature_by_tabular_pipeline, pack_cate_text_cols_to_one_sent, prepare_graph_ingredients, CKPT_FNAME, construct_graph_from_features
+from .MuGNet.models import MuGNet
 
 
 def get_tabular_embs(

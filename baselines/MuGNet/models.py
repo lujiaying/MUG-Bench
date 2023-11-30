@@ -286,12 +286,12 @@ class MuGNet(nn.Module):
         attns = self.cal_attn(fused_pooled_embs)   # (n_modality, 1)
         attns = attns.squeeze(1)   # (n_modality, )
         fused_embs = th.stack([tab_embs, txt_embs, img_embs], dim=-1)  # (N_nodes, H, n_modality)
-        if fused_embs.shape[0] <= MultiplexGNN.max_batch_size:
+        if fused_embs.shape[0] <= MuGNet.max_batch_size:
             fused_embs = th.matmul(fused_embs, attns)   # (N_nodes, H)
         else:
             # chunk into small batches
             chunks = []
-            n_chunk = fused_embs.shape[0] // MultiplexGNN.max_batch_size + 1
+            n_chunk = fused_embs.shape[0] // MuGNet.max_batch_size + 1
             for chunk in fused_embs.chunk(n_chunk, dim=0):
                 chunk = th.matmul(chunk, attns)  # (N_chunk, H)
                 chunks.append(chunk)
